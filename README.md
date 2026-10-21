@@ -15,7 +15,7 @@
 | ISF 脚本（两层解密 + 指令流） | ✅ 通 |
 | 台词文本导出 | ✅ 62,298 条 |
 | OGG / MPEG-1 | ✅ 标准格式 |
-| GGD / GG2 图像压缩 | ❌ 未解 |
+| GGD / GG2 图像压缩 | ⚠️ token 表已解出，卡在 `00` 的一个变体 |
 | 存档 SAV | ⚠️ 未解析 |
 
 ## 文档
@@ -30,6 +30,7 @@
 - `tools/isf_crypto.py` — ISF 两层解密 + 指令流切分（库）
 - `tools/isf_text.py` — 导出全部剧本正文（需原版 EXE 提供密钥表）
 - `tools/ggd_probe.py` — GGD/GG2 头部与统计探针
+- `tools/ggd_stream.py` — GGD 压缩流 token 追踪器（逐 token 打印，可与补丁图对照）
 
 用法示例：
 
