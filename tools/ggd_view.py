@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""把未压缩的 GGD（像素流以 0xFF 开头）渲染成 PNG。
+"""把未压缩的 GGD 渲染成 PNG。
 
 用法：
-    python3 ggd_view.py <in.ggd> <out.png> [归档路径]
+    python3 ggd_view.py <in.ggd> <out.png>
+    python3 ggd_view.py <SM2MPX10 归档> <归档内文件名> <out.png>
 
-如果第一个参数是 SM2MPX10 归档，则第二个参数是归档内文件名，第三个是输出 PNG。
+像素格式（已实测）：
+    0x00  4   魔数 b9 aa b3 b3
+    0x04  u16 宽
+    0x06  u16 高
+    0x08  ... 像素，24bpp **BGR**，行字节数 = (文件大小 - 8) / 高
 
-像素格式：24bpp BGR，行宽 = 头部宽 + 1，数据从 0x08 开始。
+行尾可能有 0/1/2 字节填充，所以不要用 3*宽 当步长，要用 (size-8)//h。
+压缩流（原版 GGD 0x08 处为 0x05）暂不支持。
 """
 import os
 import struct
@@ -33,20 +39,18 @@ def write_png(path, w, h, rgb):
 
 
 def decode(data):
-    """返回 (w, h, RGB 字节)。仅支持 0xFF 未压缩流。"""
+    """返回 (w, h, RGB 字节)。"""
     if data[:4] != b"\xb9\xaa\xb3\xb3":
         raise ValueError("不是 GGD")
     w, h = struct.unpack_from("<HH", data, 4)
-    if data[8] != 0xFF:
-        raise ValueError("压缩流（0x%02X），暂不支持" % data[8])
-    stride = w + 1
-    src = data[9:]
+    stride = (len(data) - 8) // h
+    if stride < w * 3:
+        raise ValueError("压缩流或数据不足（stride=%d, 需要 %d）" % (stride, w * 3))
+    src = data[8:]
     out = bytearray()
     for i in range(h):
-        row = src[i * stride * 3:(i * stride + w) * 3]
-        if len(row) < w * 3:
-            row = row + bytes(w * 3 - len(row))
-        for j in range(0, len(row), 3):
+        row = src[i * stride:i * stride + w * 3]
+        for j in range(0, len(row) - 2, 3):
             out += bytes((row[j + 2], row[j + 1], row[j]))
     return w, h, bytes(out)
 
