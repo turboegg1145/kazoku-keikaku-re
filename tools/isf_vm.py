@@ -425,6 +425,15 @@ class VM:
             self.events.append(("TEXT", spk, txt, self.voice))
             self.voice = None
             return False
+        if op == 0x57:
+            # FUN_004398C0：8 个操作数 + 按 cmd 追加的额外操作数
+            cmd = self.u8()
+            f = [self.val() for _ in range(8)]
+            extra_n = {0x0f: 2, 0x10: 2, 0x11: 2, 0x12: 2, 0x14: 1, 0x15: 1,
+                       0x1c: 4, 0x1d: 4}.get(cmd, 0)
+            extra = [self.val() for _ in range(extra_n)]
+            self.events.append(("DRAW", cmd, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], extra))
+            return False
         if op == 0x70:
             # FUN_0043A690：BGM。NUL 结尾的名字 + 模式 u8；引擎把扩展名换成 .OGG
             nul = self.plain.index(0, self.code, end)

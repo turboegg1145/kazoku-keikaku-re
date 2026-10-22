@@ -259,6 +259,10 @@ pub enum Event {
     BgmVolume { looping: bool, volume: u32 },
     /// `0x72 <u32 音量>`：0 表示停掉 BGM。
     BgmLevel(u32),
+    /// `0x57`：把图像画到画面上。`img` 是 `0x56` 注册表里的序号，
+    /// `(x,y,w,h)` 是源矩形，`(dx,dy)` 是目标位置，`dur` 是过渡时长（毫秒）。
+    Draw { cmd: u8, img: i32, x: i32, y: i32, w: i32, h: i32, dur: i32, dx: i32, dy: i32,
+           extra: Vec<i32> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -859,6 +863,29 @@ impl Vm {
                 // FUN_0043AAF0：音量操作数，< 1 表示停
                 let level = self.val() as u32;
                 self.events.push(Event::BgmLevel(level));
+                Ok(false)
+            }
+            0x57 => {
+                // FUN_004398C0：8 个操作数 + 按 cmd 追加的额外操作数
+                let cmd = self.take_u8();
+                let mut f = [0i32; 8];
+                for v in f.iter_mut() {
+                    *v = self.val();
+                }
+                let extra_n = match cmd {
+                    0x0F..=0x12 => 2,
+                    0x14 | 0x15 => 1,
+                    0x1C | 0x1D => 4,
+                    _ => 0,
+                };
+                let mut extra = Vec::new();
+                for _ in 0..extra_n {
+                    extra.push(self.val());
+                }
+                self.events.push(Event::Draw {
+                    cmd, img: f[0], x: f[1], y: f[2], w: f[3], h: f[4], dur: f[5],
+                    dx: f[6], dy: f[7], extra,
+                });
                 Ok(false)
             }
             0x78 => {

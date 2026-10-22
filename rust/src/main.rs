@@ -461,6 +461,16 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                     writeln!(f, "[BGM_VOL] {} {}", *looping as u8, volume)?
                 }
                 isf::Event::BgmLevel(v) => writeln!(f, "[BGM_LEVEL] {}", v)?,
+                isf::Event::Draw { cmd, img, x, y, w, h, dur, dx, dy, extra } => {
+                    let mut line = format!(
+                        "[DRAW] cmd={} img={} src={},{},{},{} dur={} dst={},{}",
+                        cmd, img, x, y, w, h, dur, dx, dy
+                    );
+                    for v in extra {
+                        line.push_str(&format!(" +{}", v));
+                    }
+                    writeln!(f, "{}", line)?;
+                }
             }
         }
         println!("{:<14} {:<38} steps={:<8} texts={:<5}", name, halt.to_string(), vm.steps, texts);

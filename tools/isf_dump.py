@@ -67,6 +67,13 @@ def main(argv):
                     who = "S%d" % spk if spk is not None else "-"
                     tag = voice or "-"
                     f.write("[TEXT] %-3s %-10s %s\n" % (who, tag, txt.replace("\n", "\\n")))
+                elif kind == "DRAW":
+                    cmd, img, x, y, w, h, dur, dx, dy, extra = rest
+                    line = ("[DRAW] cmd=%d img=%d src=%d,%d,%d,%d dur=%d dst=%d,%d"
+                            % (cmd, img, x, y, w, h, dur, dx, dy))
+                    for v in extra:
+                        line += " +%d" % v
+                    f.write(line + "\n")
                 else:
                     f.write("[%s] %s\n" % (kind, " ".join(str(x) for x in rest)))
         print("%-14s %-38s steps=%-8d texts=%-5d -> %s"
