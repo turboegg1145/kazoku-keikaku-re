@@ -489,6 +489,18 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                 isf::Event::SurfaceText { surface, flag, text } => {
                     writeln!(f, "[SURF_TEXT] surf={} flag={} text={}", surface, flag, text)?
                 }
+                isf::Event::SurfaceFlag { surface, on } => {
+                    writeln!(f, "[SURF_FLAG] surf={} on={}", surface, on)?
+                }
+                isf::Event::Surface27 { surface, value } => {
+                    writeln!(f, "[SURF27] surf={} value={}", surface, value)?
+                }
+                isf::Event::Surface29(s) => writeln!(f, "[SURF29] surf={}", s)?,
+                isf::Event::Surface2A(s) => writeln!(f, "[SURF2A] surf={}", s)?,
+                isf::Event::BgmStop => writeln!(f, "[BGM_STOP]")?,
+                isf::Event::VoicePlay(v) => writeln!(f, "[VOICE_PLAY] {}", v)?,
+                isf::Event::SelectIndex(i) => writeln!(f, "[SELECT] {}", i)?,
+                isf::Event::TextBuf(t) => writeln!(f, "[TEXT_BUF] {}", t)?,
                 isf::Event::BitsFill { from, to, value } => {
                     writeln!(f, "[BITS_FILL] {}..{} = {}", from, to, value)?
                 }

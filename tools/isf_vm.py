@@ -106,6 +106,8 @@ class VM:
         self.sys28 = bytearray()
         # 0xF1 设的等待时长（引擎 vm+0x7B4）
         self.deadline = 0
+        # 0x84 定义的绘制槽（引擎 engine+0xE0，64 项）
+        self.slots = [None] * 64
 
     # ---- 取指原语（对应 FUN_00434960/80/90）----
     def u8(self):
@@ -524,6 +526,51 @@ class VM:
             text = self.take_str(end)
             self.code = end
             self.events.append(("SURF_TEXT", surf, flag, text))
+            return False
+        if op == 0x84:
+            # FUN_0043B6F0：<u8 槽> <x> <y> <w> <h> <u8 层> <u16 图> <u8> <u8> <u8>
+            slot = self.u8() & 0x3F
+            x = self.u32raw()
+            y = self.u32raw()
+            w = self.u32raw()
+            h = self.u32raw()
+            layer = self.u8()
+            image = self.u16()
+            self.u8()
+            self.u8()
+            self.u8()
+            if slot < len(self.slots):
+                self.slots[slot] = (x, y, w, h, layer, image)
+            return False
+        if op == 0x26:
+            surf = self.u8()
+            on = self.val()
+            self.events.append(("SURF_FLAG", surf, on))
+            return False
+        if op == 0x27:
+            surf = self.u8()
+            value = self.val()
+            self.events.append(("SURF27", surf, value))
+            return False
+        if op == 0x29:
+            self.events.append(("SURF29", self.u8()))
+            return False
+        if op == 0x2A:
+            self.events.append(("SURF2A", self.u8()))
+            return False
+        if op == 0x73:
+            self.events.append(("BGM_STOP",))
+            return False
+        if op == 0x77:
+            self.events.append(("VOICE_PLAY", self.u8()))
+            return False
+        if op == 0x89:
+            self.events.append(("SELECT", self.val() & 0x3F))
+            return False
+        if op == 0xF7:
+            text = self.take_str(end)
+            self.code = end
+            self.events.append(("TEXT_BUF", text))
             return False
         if op == 0x32:
             frm = self.u16()

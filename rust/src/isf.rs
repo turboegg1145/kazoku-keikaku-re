@@ -269,6 +269,22 @@ pub enum Event {
     ObjParam { index: u8, a: i32, b: i32, flag: u8 },
     /// `0x25 <u8 面> <u8 标志> <文本>`：往画面上写文本（FUN_004141E0）。
     SurfaceText { surface: u8, flag: u8, text: String },
+    /// `0x26 <u8 面> <开/关>`：FUN_0041C8F0，同时把 vm+0x548 记成开关状态。
+    SurfaceFlag { surface: u8, on: i32 },
+    /// `0x27 <u8 面> <值>`：FUN_0041C910。
+    Surface27 { surface: u8, value: i32 },
+    /// `0x29 <u8 面>`：FUN_0041C950。
+    Surface29(u8),
+    /// `0x2A <u8 面>`：FUN_0041C9A0。
+    Surface2A(u8),
+    /// `0x73`：停 BGM（FUN_0043AB60，只在该通道状态为 2 时动）。
+    BgmStop,
+    /// `0x77 <u8 参数>`：语音播放/跳过（FUN_0043AF20，会看 Ctrl 键状态）。
+    VoicePlay(u8),
+    /// `0x89 <序号 0..63>`：FUN_00440760 选一个索引。
+    SelectIndex(i32),
+    /// `0xF7 <文本>`：写进 vm+0x190 的 79 字节缓冲（FUN_004346A0）。
+    TextBuf(String),
     /// `0x32 <u16 起> <u16 止> <u8 值>`：位数组区间填充（FUN_00423B40）。
     BitsFill { from: u16, to: u16, value: u8 },
     /// `0x37 <功能号> <参数>`：系统功能（FUN_004378F0 里 0..0x13 的大 switch）。
@@ -1129,6 +1145,32 @@ impl Vm {
                 self.events.push(Event::SurfaceText { surface, flag, text });
                 Ok(false)
             }
+            0x26 => {
+                // FUN_004373B0 → FUN_0041C8F0：<面> <开关>
+                let surface = self.take_u8();
+                let on = self.val();
+                self.events.push(Event::SurfaceFlag { surface, on });
+                Ok(false)
+            }
+            0x27 => {
+                // FUN_00437410 → FUN_0041C910：<面> <值>
+                let surface = self.take_u8();
+                let value = self.val();
+                self.events.push(Event::Surface27 { surface, value });
+                Ok(false)
+            }
+            0x29 => {
+                // FUN_004374B0 → FUN_0041C950：<面>
+                let surface = self.take_u8();
+                self.events.push(Event::Surface29(surface));
+                Ok(false)
+            }
+            0x2A => {
+                // FUN_004374F0 → FUN_0041C9A0：<面>
+                let surface = self.take_u8();
+                self.events.push(Event::Surface2A(surface));
+                Ok(false)
+            }
             0x32 => {
                 // FUN_004376F0：<u16 起> <u16 止> <u8 值> → 位数组区间填充
                 let from = self.take_u16();
@@ -1466,6 +1508,30 @@ impl Vm {
                     cmd, img: f[0], x: f[1], y: f[2], w: f[3], h: f[4], dur: f[5],
                     dx: f[6], dy: f[7], extra,
                 });
+                Ok(false)
+            }
+            0x73 => {
+                // FUN_0043AB60：停 BGM
+                self.events.push(Event::BgmStop);
+                Ok(false)
+            }
+            0x77 => {
+                // FUN_0043AF20：语音播放/跳过
+                let v = self.take_u8();
+                self.events.push(Event::VoicePlay(v));
+                Ok(false)
+            }
+            0x89 => {
+                // FUN_0043BA30 → FUN_00440760：<序号 0..63>
+                let idx = self.val() & 0x3F;
+                self.events.push(Event::SelectIndex(idx));
+                Ok(false)
+            }
+            0xF7 => {
+                // FUN_0043DB10 → FUN_004346A0：<文本>
+                let text = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::TextBuf(text));
                 Ok(false)
             }
             0x74 => {

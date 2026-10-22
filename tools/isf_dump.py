@@ -96,6 +96,24 @@ def main(argv):
                 elif kind == "SURF_TEXT":
                     surf, flag, text = rest
                     f.write("[SURF_TEXT] surf=%d flag=%d text=%s\n" % (surf, flag, text))
+                elif kind == "SURF_FLAG":
+                    surf, on = rest
+                    f.write("[SURF_FLAG] surf=%d on=%d\n" % (surf, on))
+                elif kind == "SURF27":
+                    surf, value = rest
+                    f.write("[SURF27] surf=%d value=%d\n" % (surf, value))
+                elif kind == "SURF29":
+                    f.write("[SURF29] surf=%d\n" % rest[0])
+                elif kind == "SURF2A":
+                    f.write("[SURF2A] surf=%d\n" % rest[0])
+                elif kind == "BGM_STOP":
+                    f.write("[BGM_STOP]\n")
+                elif kind == "VOICE_PLAY":
+                    f.write("[VOICE_PLAY] %d\n" % rest[0])
+                elif kind == "SELECT":
+                    f.write("[SELECT] %d\n" % rest[0])
+                elif kind == "TEXT_BUF":
+                    f.write("[TEXT_BUF] %s\n" % rest[0])
                 elif kind == "BITS_FILL":
                     frm, to, value = rest
                     f.write("[BITS_FILL] %d..%d = %d\n" % (frm, to, value))
