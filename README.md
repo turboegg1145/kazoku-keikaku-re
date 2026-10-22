@@ -12,7 +12,7 @@
 | 模块 | 状态 |
 |---|---|
 | SM2MPX10 归档 | ✅ 全部解析（842 个成员） |
-| ISF 脚本（两层解密 + 指令流） | ✅ 通 |
+| ISF 脚本（两层解密 + 指令流） | ✅ 通，163 个 opcode 的处理函数全部定位 |
 | 台词文本导出 | ✅ 62,298 条 |
 | OGG / MPEG-1 | ✅ 标准格式 |
 | GGD 图像（50 个成员，24bpp） | ✅ **完全解开**，操作码表从 `FUN_0040b190` 抄出 |
@@ -23,6 +23,7 @@
 
 - [引擎与运行时](docs/01-engine.md)
 - [文件格式](docs/02-formats.md)
+- [ISF 虚拟机](docs/04-isf-vm.md)
 - [移植评估（Rust + iOS）](docs/03-porting.md)
 - [负结果与踩坑记录](notes/negative-results.md)
 
@@ -34,6 +35,7 @@
 - `tools/test_ggd.py` — 不依赖游戏数据的自检（6 项，全部通过）
 - `tools/isf_crypto.py` — ISF 两层解密 + 指令流切分（库）
 - `tools/isf_text.py` — 导出全部剧本正文（需原版 EXE 提供密钥表）
+- `tools/isf_dis.py` — ISF 反汇编（带 opcode 助记符）
 
 用法示例：
 
