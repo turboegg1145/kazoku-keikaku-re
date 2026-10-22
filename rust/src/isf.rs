@@ -394,6 +394,8 @@ pub enum Halt {
     /// 顶层 `0x06`：返回栈空，也等于正常结束
     ReturnUnderflow,
     StepLimit,
+    /// 渲染用：已经拿到足够的台词，主动停下（省时间省内存）。
+    TextLimit,
     ReturnOverflow,
     BadLength { at: usize, len: usize },
     OutOfRange { at: usize },
@@ -408,6 +410,7 @@ impl std::fmt::Display for Halt {
             Halt::End => write!(f, "END (0x03)"),
             Halt::ReturnUnderflow => write!(f, "return stack underflow"),
             Halt::StepLimit => write!(f, "step limit"),
+            Halt::TextLimit => write!(f, "已经取够台词"),
             Halt::ReturnOverflow => write!(f, "return stack overflow"),
             Halt::BadLength { at, len } => write!(f, "bad length {} at {:#x}", len, at),
             Halt::OutOfRange { at } => write!(f, "code pointer {:#x} out of range", at),
@@ -552,6 +555,10 @@ pub struct Vm {
     pub sys28: Vec<u8>,
     /// `0xF1` 设的等待时长（引擎 vm+0x7B4 存的是 timeGetTime()+n）。
     pub deadline: i32,
+    /// 收到这么多句台词就停（渲染用；None = 不停）。
+    pub stop_texts: Option<usize>,
+    /// 已经产生的台词数。
+    pub text_count: usize,
 }
 
 impl Vm {
@@ -593,6 +600,8 @@ impl Vm {
             sys27: Vec::new(),
             sys28: Vec::new(),
             deadline: 0,
+            stop_texts: None,
+            text_count: 0,
         }
     }
 
@@ -914,6 +923,12 @@ impl Vm {
                 let (spk, txt) = decode_text(&self.plain[self.code..end]);
                 self.text_bg.push(self.current_bg());
                 self.events.push(Event::Text { speaker: spk, text: txt, voice: self.voice.take() });
+                self.text_count += 1;
+                if let Some(n) = self.stop_texts {
+                    if self.text_count >= n {
+                        return Err(Halt::TextLimit);
+                    }
+                }
                 Ok(false)
             }
             0x30 => {

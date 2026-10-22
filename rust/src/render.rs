@@ -21,11 +21,13 @@ pub struct Canvas {
     pub height: usize,
     /// RGBA8
     pub pixels: Vec<u8>,
+    /// 整块不透明（alpha 全 255）。贴图时可以走 memcpy 快路径。
+    pub opaque: bool,
 }
 
 impl Canvas {
     pub fn new(width: usize, height: usize) -> Canvas {
-        Canvas { width, height, pixels: vec![0; width * height * 4] }
+        Canvas { width, height, pixels: vec![0; width * height * 4], opaque: false }
     }
 
     pub fn fill(&mut self, r: u8, g: u8, b: u8, a: u8) {
@@ -35,6 +37,7 @@ impl Canvas {
             px[2] = b;
             px[3] = a;
         }
+        self.opaque = a == 255;
     }
 
     /// 把 B,G,R,A 的图贴到 (dx, dy)，按 alpha 混合。
@@ -65,6 +68,20 @@ impl Canvas {
     pub fn blend(&mut self, x: usize, y: usize, r: u32, g: u32, b: u32, a: u32) {
         let o = (y * self.width + x) * 4;
         let dst_a = self.pixels[o + 3] as u32;
+        if dst_a == 255 {
+            // 目标本来就不透明：一次乘法就够，不用算 out_a
+            if a == 255 {
+                self.pixels[o] = r as u8;
+                self.pixels[o + 1] = g as u8;
+                self.pixels[o + 2] = b as u8;
+            } else if a != 0 {
+                let inv = 255 - a;
+                self.pixels[o] = ((r * a + self.pixels[o] as u32 * inv + 127) / 255) as u8;
+                self.pixels[o + 1] = ((g * a + self.pixels[o + 1] as u32 * inv + 127) / 255) as u8;
+                self.pixels[o + 2] = ((b * a + self.pixels[o + 2] as u32 * inv + 127) / 255) as u8;
+            }
+            return;
+        }
         // source-over，全程 0..255 定点
         let out_a = a + dst_a * (255 - a) / 255;
         if out_a == 0 {
@@ -228,14 +245,20 @@ impl Canvas {
     /// 把 B,G,R(,A) 的图像整张转成 RGBA 画布。
     pub fn from_image(img: &Image) -> Canvas {
         let mut cv = Canvas::new(img.width, img.height);
+        let has_a = img.channels == 4 && img.alpha;
+        let mut opaque = true;
         for i in 0..img.width * img.height {
             let s = i * img.channels;
             cv.pixels[i * 4] = img.pixels[s + 2];
             cv.pixels[i * 4 + 1] = img.pixels[s + 1];
             cv.pixels[i * 4 + 2] = img.pixels[s];
-            cv.pixels[i * 4 + 3] =
-                if img.channels == 4 && img.alpha { img.pixels[s + 3] } else { 255 };
+            let a = if has_a { img.pixels[s + 3] } else { 255 };
+            cv.pixels[i * 4 + 3] = a;
+            if a != 255 {
+                opaque = false;
+            }
         }
+        cv.opaque = opaque;
         cv
     }
 
@@ -259,32 +282,47 @@ impl Canvas {
         if level == 0 || w <= 0 || h <= 0 {
             return;
         }
-        for j in 0..h {
-            let syy = sy + j;
-            if syy < 0 || syy >= src.height as i32 {
-                continue;
+        // 裁剪出源/目标各自的有效区间
+        let x0 = sx.max(0);
+        let y0 = sy.max(0);
+        let x1 = (sx + w).min(src.width as i32);
+        let y1 = (sy + h).min(src.height as i32);
+        let tx0 = (dx + (x0 - sx)).max(0);
+        let ty0 = (dy + (y0 - sy)).max(0);
+        let tw = (x1 - x0).min(self.width as i32 - tx0);
+        let th = (y1 - y0).min(self.height as i32 - ty0);
+        if tw <= 0 || th <= 0 {
+            return;
+        }
+        // 快路径：整块不透明 + 不透明度 100% → 直接按行拷贝
+        if level == 255 && src.opaque {
+            for j in 0..th {
+                let so = ((y0 + j) as usize * src.width + x0 as usize) * 4;
+                let dof = ((ty0 + j) as usize * self.width + tx0 as usize) * 4;
+                let n = tw as usize * 4;
+                self.pixels[dof..dof + n].copy_from_slice(&src.pixels[so..so + n]);
             }
-            let ty = dy + j;
-            if ty < 0 || ty >= self.height as i32 {
-                continue;
-            }
-            for i in 0..w {
-                let sxx = sx + i;
-                if sxx < 0 || sxx >= src.width as i32 {
-                    continue;
-                }
-                let tx = dx + i;
-                if tx < 0 || tx >= self.width as i32 {
-                    continue;
-                }
-                let o = (syy as usize * src.width + sxx as usize) * 4;
+            self.opaque = self.opaque
+                && tx0 == 0
+                && ty0 == 0
+                && tw as usize == self.width
+                && th as usize == self.height;
+            return;
+        }
+        for j in 0..th {
+            let syy = (y0 + j) as usize;
+            let ty = (ty0 + j) as usize;
+            for i in 0..tw {
+                let sxx = (x0 + i) as usize;
+                let tx = (tx0 + i) as usize;
+                let o = (syy * src.width + sxx) * 4;
                 let a = src.pixels[o + 3] as u32 * level / 255;
                 if a == 0 {
                     continue;
                 }
                 self.blend(
-                    tx as usize,
-                    ty as usize,
+                    tx,
+                    ty,
                     src.pixels[o] as u32,
                     src.pixels[o + 1] as u32,
                     src.pixels[o + 2] as u32,
@@ -292,6 +330,7 @@ impl Canvas {
                 );
             }
         }
+        self.opaque = false;
     }
 
     /// 复制一块矩形区域成新画布（用于把大画面按滚动偏移裁成 640×480）。

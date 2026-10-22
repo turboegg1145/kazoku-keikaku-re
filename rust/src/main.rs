@@ -229,13 +229,19 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
         ggd2: sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok(),
     };
     // 窗框：GGD 里的 FWIN.GG2（552×152 的黑色圆角框，带外发光）
-    let frame = assets.image("FWIN.GG2");
+    // 窗框：FWIN2.GG2 是 60% 不透明的黑色圆角框（对话用），FWIN.GG2 是全黑版（菜单用）
+    let frame = assets.image("FWIN2.GG2").or_else(|| assets.image("FWIN.GG2"));
 
     let exe_path = format!("{}/KIZUNAR.EXE", dir);
     let arc_path = format!("{}/ISF", dir);
     let script = load_script(&exe_path, &arc_path, script_name)?;
     let mods = load_modules(&exe_path, &arc_path)?;
     let mut vm = isf::Vm::new(&script, steps).with_modules(mods, &stem_of(script_name));
+    // 只跑到第 lines 句台词就停：渲染用不着整本剧本，省一大截时间和内存
+    vm.stop_texts = Some(match only_at_hint(args) {
+        Some(n) => n + 1,
+        None => lines,
+    });
     let halt = vm.run()?;
     println!("{}: {}  steps={}", script_name, halt, vm.steps);
 
@@ -251,11 +257,7 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
         println!("这个脚本没有台词");
         return Ok(());
     }
-    let only_at = args
-        .iter()
-        .position(|a| a == "--at")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse::<usize>().ok());
+    let only_at = only_at_hint(args);
     let pick: Vec<usize> = match only_at {
         Some(n) => text_at.get(n).copied().into_iter().collect(),
         None => text_at.iter().take(lines).copied().collect(),
@@ -278,7 +280,7 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
             cv.write_png(&path)?;
             let (lit, tb) = cv.bright_bbox(200);
             let nl = cv
-                .wrap(&font, text, size, frame_width(frame.as_ref()) - 2.0 * INSET)
+                .wrap(&font, text, size, frame_width(frame.as_ref()) - 2.0 * INSET_X)
                 .len();
             println!(
                 "  {:03} 亮像素={:<6} 文字bbox={:?} 行数={}  {}",
@@ -322,19 +324,29 @@ impl kzn::render::ImageSource for Assets {
     }
 }
 
-/// 文本框内边距（像素）。
-const INSET: f32 = 30.0;
+/// 文本框内边距（像素）：552×152 的框里留 26 边、18 顶。
+const INSET_X: f32 = 26.0;
+const INSET_Y: f32 = 18.0;
+/// 行高 = 24px 字号 × 1.25。四行正好 120，加两倍 16 的上下边 = 152。
+const LINE_H: f32 = 30.0;
+
+fn only_at_hint(args: &[String]) -> Option<usize> {
+    args.iter()
+        .position(|a| a == "--at")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok())
+}
 
 fn frame_width(frame: Option<&ggd::Image>) -> f32 {
     frame.map(|f| f.width as f32).unwrap_or(552.0)
 }
 
-/// 把 FWIN.GG2 窗框和台词贴到画面上。
+/// 把窗框（FWIN2.GG2，60% 黑圆角框）和台词贴到画面上。
 fn draw_message(
     cv: &mut Canvas,
     font: &fontdue::Font,
     frame: Option<&ggd::Image>,
-    speaker: Option<u8>,
+    _speaker: Option<u8>,
     text: &str,
     size: f32,
 ) {
@@ -350,28 +362,19 @@ fn draw_message(
             // 没有窗框时退化成半透明黑框，方便单独调文本排版
             for y in fy..fy + fh {
                 for x in fx..fx + fw {
-                    cv.blend(x, y, 0, 0, 0, 200);
+                    cv.blend(x, y, 0, 0, 0, 153);
                 }
             }
         }
     }
-    let inner = fw as f32 - 2.0 * INSET;
-    let mut ty = fy as isize + 22;
+    let inner = fw as f32 - 2.0 * INSET_X;
+    let mut ty = fy as isize + INSET_Y as isize;
     for line in cv.wrap(font, text, size, inner).iter().take(4) {
-        cv.draw_text(font, line, fx as isize + INSET as isize, ty, size, (255, 255, 255));
-        ty += (size * 1.35) as isize;
-    }
-    if let Some(sp) = speaker {
-        cv.draw_text(
-            font,
-            &format!("S{}", sp),
-            fx as isize + INSET as isize,
-            fy as isize - 24,
-            18.0,
-            (255, 220, 160),
-        );
+        cv.draw_text(font, line, fx as isize + INSET_X as isize, ty, size, (255, 255, 255));
+        ty += LINE_H as isize;
     }
 }
+
 fn load_script(exe: &str, arc: &str, name: &str) -> kzn::Result<isf::Script> {
     let exe_bytes = std::fs::read(exe)?;
     let secret = isf::find_secret(&exe_bytes)?.to_vec();
