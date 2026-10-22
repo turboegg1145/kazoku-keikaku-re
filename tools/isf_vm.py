@@ -75,6 +75,7 @@ class VM:
         self.module = name
         self.mod_stack = []          # [(返回后模块名, 返回偏移)]
         self.vars = [0] * MAX_VARS
+        self.hover = 0
         self.ret = []
         self.flags = {}
         self.events = []
@@ -862,11 +863,18 @@ class VM:
             self.events.append(("CHOICE_CLOSE", self.u8()))
             return False
         if op == 0x18:
-            # FUN_00436F00 -> FUN_004186C0：<u8 窗口> <u16 值> <u8 标志>
+            # FUN_00436F00 -> FUN_004186C0：<u8 窗口> <u16 槽> <u8 标志>
+            # 低两位：0 鼠标(阻塞) / 1 键盘 / 2 取消写 -1 / 3 确认写当前高亮
             win = self.u8()
-            value = self.u16()
+            slot = self.u16()
             flags = self.u8()
-            self.events.append(("CHOICE_INPUT", win, value, flags))
+            mode = flags & 3
+            # dump 模式不模拟输入：hover 保持 0，等价于「永远选第 0 项」
+            if mode == 2:
+                self.set_var(slot, -1)
+            elif mode == 3:
+                self.set_var(slot, self.hover)
+            self.events.append(("CHOICE_INPUT", win, slot, flags))
             return False
         if op == 0x1A:
             self.events.append(("CHOICE_CLEAR",))

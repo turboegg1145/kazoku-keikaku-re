@@ -542,6 +542,11 @@ pub struct Vm {
     labels: std::rc::Rc<Vec<u32>>,
     pub code: usize,
     pub vars: Vec<i32>,
+    /// 当前高亮的选项下标（引擎 win+0x181C）；-2 = 没选中，-1 = 取消。
+    pub hover: i32,
+    /// 主循环驱动时置 true：0x18 的鼠标模式会卡住 PC 等输入（引擎行为）。
+    /// 批量 dump 时置 false，否则会原地死循环。
+    pub block_on_input: bool,
     ret: Vec<usize>,
     pub events: Vec<Event>,
     pub steps: u64,
@@ -611,6 +616,9 @@ impl Vm {
             labels: script.labels.clone(),
             code: script.head_len,
             vars: vec![0; MAX_VARS],
+            // dump 模式下不模拟输入：等价于「永远选第 0 项」，这样能走完一条完整路线
+            hover: 0,
+            block_on_input: false,
             ret: Vec::new(),
             events: Vec::new(),
             steps: 0,
@@ -860,33 +868,51 @@ impl Vm {
 
     pub fn run(&mut self) -> Result<Halt> {
         loop {
-            if self.steps >= self.limit {
-                return Ok(Halt::StepLimit);
-            }
-            if self.code < self.base || self.code >= self.plain.len() {
-                return Ok(Halt::OutOfRange { at: self.code });
-            }
-            let start = self.code;
-            let op = self.take_u8();
-            let mut len = self.take_u8() as usize;
-            let mut head = 2usize;
-            if len & 0x80 != 0 {
-                len = (((len << 8) | self.take_u8() as usize) & 0x7FFF) as usize;
-                head = 3;
-            }
-            let end = start + len;
-            if len < head || end > self.plain.len() {
-                return Ok(Halt::BadLength { at: start, len });
-            }
-            self.steps += 1;
-            match self.exec(op, end) {
-                Ok(true) => {}
-                Ok(false) => self.code = end,
-                Err(Halt::End) => return Ok(Halt::End),
-                Err(Halt::ReturnUnderflow) => return Ok(Halt::ReturnUnderflow),
-                Err(other) => return Ok(other),
+            if let Some(h) = self.step()? {
+                return Ok(h);
             }
         }
+    }
+
+    /// 执行一条指令。返回 Some(halt) 表示 VM 停下了，None 表示还能继续。
+    ///
+    /// 游戏主循环用它做单步驱动：跑一条指令、把新事件交给渲染/音频层，
+    /// 遇到需要等待的指令（台词、过渡、选项）就 break 出去等时间/输入。
+    pub fn step(&mut self) -> Result<Option<Halt>> {
+        if self.steps >= self.limit {
+            return Ok(Some(Halt::StepLimit));
+        }
+        if self.code < self.base || self.code >= self.plain.len() {
+            return Ok(Some(Halt::OutOfRange { at: self.code }));
+        }
+        let start = self.code;
+        let op = self.take_u8();
+        let mut len = self.take_u8() as usize;
+        let mut head = 2usize;
+        if len & 0x80 != 0 {
+            len = (((len << 8) | self.take_u8() as usize) & 0x7FFF) as usize;
+            head = 3;
+        }
+        let end = start + len;
+        if len < head || end > self.plain.len() {
+            return Ok(Some(Halt::BadLength { at: start, len }));
+        }
+        self.steps += 1;
+        match self.exec(op, end) {
+            Ok(true) => Ok(None),
+            Ok(false) => {
+                self.code = end;
+                Ok(None)
+            }
+            Err(Halt::End) => Ok(Some(Halt::End)),
+            Err(Halt::ReturnUnderflow) => Ok(Some(Halt::ReturnUnderflow)),
+            Err(other) => Ok(Some(other)),
+        }
+    }
+
+    /// 取走目前累积的事件（主循环每帧清一次，避免长时间运行把内存吃满）。
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
     }
 
     fn exec(&mut self, op: u8, end: usize) -> std::result::Result<bool, Halt> {
@@ -1483,11 +1509,43 @@ impl Vm {
                 Ok(false)
             }
             0x18 => {
-                // FUN_00436F00 → FUN_004186C0：<u8 窗口> <u16 值> <u8 标志>
+                // FUN_00436F00 → FUN_004186C0：<u8 窗口> <u16 槽> <u8 标志>
+                //
+                // 标志低两位是模式（FUN_004186C0 的 switch）：
+                //   0 鼠标：等待点击，**不推进 PC**（引擎里 FUN_00434EB0 不被调用）
+                //   1 键盘：清掉当前选择
+                //   2 取消：把 -1 写进槽
+                //   3 确认：把当前高亮项写进槽（无选中写 -2）
                 let window = self.take_u8();
-                let value = self.take_u16();
+                let slot = self.take_u16();
                 let flags = self.take_u8();
-                self.events.push(Event::ChoiceInput { window, value, flags });
+                match flags & 3 {
+                    0 => {
+                        if self.block_on_input {
+                            self.hover = -2;
+                        }
+                        self.events.push(Event::ChoiceInput { window, value: slot, flags });
+                        if self.block_on_input {
+                            return Ok(true); // 阻塞：下一次 step() 重新执行这条指令
+                        }
+                    }
+                    1 => {
+                        if self.block_on_input {
+                            self.hover = -2;
+                        }
+                    }
+                    2 => {
+                        if (slot as usize) < self.vars.len() {
+                            self.vars[slot as usize] = -1;
+                        }
+                    }
+                    _ => {
+                        if (slot as usize) < self.vars.len() {
+                            self.vars[slot as usize] = self.hover;
+                        }
+                    }
+                }
+                self.events.push(Event::ChoiceInput { window, value: slot, flags });
                 Ok(false)
             }
             0x1A => {
