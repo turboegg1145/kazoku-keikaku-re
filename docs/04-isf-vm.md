@@ -176,19 +176,30 @@ if (test(a, cmp, b)) {
 |---|---|---|---|
 | `00` | NOP | — | 空指令（34 次）|
 | `02` | 命令名 | ASCII 串 | 子模块/命令名，如 `BGMLOAD`、`SELOAD` |
+| `03` | END | — | **结束脚本**。`CGLIB`/`INIT`/`SELOAD`/`TCG`/`YANE` 用它收尾，其余 36 个用 `06` |
+| `04` | GOTO | `u16 label` | 无条件跳转 |
 | `05` | CALL | `u16 label` | 压返回地址并跳标签 |
-| `06` | RET | — | 返回 |
+| `06` | RET | — | 返回（栈空 = 脚本结束）|
 | `07` | SWITCH | `u32 sel, u8 n, u16[n]` | 按选择子跳标签 |
+| `08` | CSWITCH | `u32 sel, u8 n, u16[n]` | 和 `07` 同操作数，**跳之前压返回地址**（call 版 switch）|
 | `2B` | TEXT | 见 02-formats 2.6 | 台词 |
+| `31` | SETBIT | `u16 bit, u8 mode` | 位数组 `vm+0x554` 第 `bit` 位：0 清、1 置、2 翻转（「读过」标记）|
+| `3A` | SYSIF | `u8 sys, u8 arg, u16 label` | 系统条件成立就跳（16 种，见 §5）|
 | `3B` | 槽号 | `u16 id, u16 ?` | 与 `57` 成对出现，疑似「对象槽」 |
 | `44` | ASSIGN | `u16 dst, (u8 op, u32 v)*` | `vars[dst] = expr` |
 | `47` | IF | 见上 | 比较 + 跳转/赋值 |
+| `49` | LOADREC | `u32 file, u32 idx, u32 ?, u8 which` | 从数据文件读一条记录进数组（`FUN_00434770`）|
 | `56` | IMAGE | `u32 idx, ascii name` | 图像资源名 |
 | `57` | 放置 | `u16 ? , u32×4` | 与 `3B` 成对，疑似坐标/尺寸 |
 | `78` | VOICE | ASCII 串 | 语音文件名 |
+| `85` | INPUT | `u16 va, u16 vb, u8 mode, u8 flags` | **轮询输入**：`vars[va]` = 热区号，`vars[vb]` = 事件（见 §10）|
+| `86` | CLRINPUT | — | 清掉 Enter/鼠标的按键边沿状态（`FUN_00440850`）|
+| `87` | NOP | — | 处理函数 `FUN_004434f0` 就是一条 `ret`，纯占位 |
 | `F0` | VOICE_ARCHIVE | `u8 4 + ascii` | 语音所在归档（`4VOICE2`）|
 | `F4` | SET_FLAG | `u8` | `engine+0x7FD = v != 0` |
 | `F5` | SET_FLAG2 | `u8` | `engine+0x83D = v != 0`，且 `v == 1` 时 `engine+0x83C = 1` |
+| `FB` | TMRST | — | 计时器清零（`FUN_004345c0`：`vm+0x184 = 0`）|
+| `FC` | TMR | `u16 var` | `vars[var]` = 计时器毫秒（`timeGetTime()` 差值）|
 
 `F4` / `F5` 的载荷**只有 `00` 和 `01`**，在 `SNR00.ISF` 里各出现 3225 / 3141 次
 （3141 正好等于该文件的台词条数），高度怀疑是「文本窗口 / 语音播放」这类 UI 开关，
@@ -380,10 +391,30 @@ python3 tools/isf_vm.py KIZUNAR.EXE ISF SNR00.ISF --out snr00.txt  # 导出带�
 
 | 指标 | 结果 |
 |---|---|
-| 41 个文件全部终止于 | `return stack underflow`（= 顶层 `RET`，正常结束）|
-| 总步数 | 4,831,643 |
-| 执行到的台词 | 60,917 条（静态共 62,405 条）|
-| 台词顺序与线性扫描一致 | **34 / 41 个文件逐条相同** |
+| 自然结束 | **37 / 41**（`END 0x03` 或顶层 `RET`）|
+| 剩下 4 个 | `TITLE` / `BGMMODE` / `CGMODE` / `SEXMODE` —— 菜单，等输入，空转是设计如此 |
+| 总步数 | 11,237,270 |
+| 执行到的台词 | 57,856 条（静态共 62,405 条）|
+
+```
+BGMLOAD.ISF    END (0x03)          steps=7        texts=0
+BGMMODE.ISF    step limit          steps=300000   texts=0     <- 菜单
+CGLIB.ISF      END (0x03)          steps=16       texts=0     <- 纯库，被别的脚本 CALL
+CGMODE.ISF     step limit          steps=300000   texts=0     <- 菜单
+INIT.ISF       END (0x03)          steps=7        texts=0
+LOAD.ISF       return underflow    steps=94       texts=0
+SELOAD.ISF     END (0x03)          steps=12       texts=0     <- 纯库
+SEXMODE.ISF    step limit          steps=300000   texts=0     <- 菜单
+SNR00.ISF      return underflow    steps=152848   texts=2852
+...
+STAFF.ISF      return underflow    steps=55837    texts=0
+START.ISF      return underflow    steps=645      texts=0
+TCG.ISF        END (0x03)          steps=15       texts=0
+TITLE.ISF      step limit          steps=300000   texts=0     <- 标题画面
+YANE.ISF       END (0x03)          steps=13       texts=0
+```
+
+`tools/isf_dump.py` 会把 41 个脚本的事件流分别写到 `out/script/<名字>.txt`。
 
 **34/41 逐条相同**是最强的正确性证据：虚拟机走出来的台词序列，和「按文件顺序把所有 `0x2B`
 扫一遍」得到的序列完全一样（只少了文件开头那句 `　ロードに失敗しました。`——它在错误分支里，
@@ -415,5 +446,124 @@ F0 04 "VOICE2"               ; 语音归档
 显示子程序里就是那些高频的中频 opcode（`0x79` `0x81` `0x85` `0x86` `0x87` `0x49` `0x31`），
 它们一次文本执行一次，所以执行次数全都卡在 3130 上下。
 
-这也给下一步指了路：**想还原画面，就去啃 `0x0CEA` 这个子程序**——它一定是「画文本框 + 排版 +
-等按键」的那段代码。
+其中 `0x85` / `0x86` / `0x87` / `0xFB` / `0xFC` 的语义已经确认（见 §10），`0x87` 干脆是空指令。
+剩下 `0x79` / `0x81` / `0x49` / `0x37` 还是「文本框排版」那一层，属于**重写时自己实现**的部分——
+原引擎怎么画的并不需要照抄。
+
+## 10. 输入 / 计时器 / 菜单循环
+
+### 10.1 `0x85`：轮询输入
+
+```
+85 <u16 var_a> <u16 var_b> <u8 mode> <u8 flags>
+```
+
+处理函数 `FUN_0043b800`：
+
+```c
+if (flags & 2) { FUN_004407a0(engine, var_a, var_b, mode, flags & 1); return; }   // 只看悬停
+FUN_00440b40(engine, var_a, var_b, mode, flags & 1, flags & 4);                  // 完整轮询
+```
+
+`FUN_00440b40` 干的事（这是整个输入系统的核心）：
+
+```c
+GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
+hit = FUN_00440910(this, pt.x, pt.y);          // 命中哪个 UI 热区
+FUN_00424a60(vars, var_a, hit);                // vars[var_a] = 热区号
+...
+ev = 0;
+if (GetAsyncKeyState(0x0D) & 0x8000) ev = 2;   // Enter
+if (GetAsyncKeyState(0x1B) & 0x8000) ev = -1;  // Esc
+if (GetAsyncKeyState(0x02) & 0x8000) ev = -1;  // 鼠标右键
+FUN_00424a60(vars, var_b, ev);                 // vars[var_b] = 事件
+```
+
+| 变量 | 取值 |
+|---|---|
+| `vars[var_a]`（热区）| 热区序号；`-1` = 没指到任何东西；`-2` = 鼠标在 640×480 画面外 |
+| `vars[var_b]`（事件）| `0` = 什么都没发生；`2` = 确定（Enter / 左键 / 手柄 A）；`-1` = 取消（Esc / 右键 / 手柄 B）|
+
+### 10.2 `0xFB` / `0xFC`：毫秒计时器
+
+| opcode | 载荷 | 处理函数 | 语义 |
+|---|---|---|---|
+| `FB` | — | `FUN_004345c0` | `vm+0x184 = 0`，计时器清零 |
+| `FC` | `u16 var` | `FUN_0043dcb0` | `vars[var] = FUN_004345d0()` |
+
+`FUN_004345d0` 就是「`timeGetTime()` 累计差值」：第一次调用记下时间戳，之后每次把
+「现在 - 上次」累加进 `vm+0x188` 并返回。所以 `FC` 读的是**从上次 `FB` 到现在的毫秒数**。
+
+### 10.3 两个标准形状
+
+**等待 N 毫秒**（`START.ISF` 0xEA2，`STAFF.ISF` 0x80BF 都是这个形状）：
+
+```
+FB                           ; 计时器清零
+L: FC 0A                     ; vars[0x0A] = 已过毫秒
+   47 0A 00 00 80 | 04 | 0C 00 00 80 | 00 | 0F 00 | FF
+                             ; if vars[0x0A] >= vars[0x0C] goto L_exit
+   04 0E 00                 ; goto L
+L_exit:
+```
+
+**菜单循环**（`TITLE.ISF` 0x7B9）：
+
+```
+L: 85 07 00 08 00 05 01      ; vars[7] = 热区, vars[8] = 事件
+   47 09 00 00 80 | 00 | 07 00 00 80 | 00 | 0A 00 | FF
+                             ; if vars[9] == vars[7] goto 跳过悬停处理
+   08 ...                   ; 悬停变化 -> call 对应子程序（放音效之类）
+   44 09 00 | 00 | 07 00 00 80 | 05        ; vars[9] = vars[7]
+   47 08 00 00 80 | 03 | 01 00 00 00 | 00 | 0B 00 | FF
+                             ; if vars[8] > 1 goto 派发
+   04 09 00                 ; goto L
+派发: 07 07 00 00 80 ...      ; switch vars[7] 分派到各个按钮
+```
+
+### 10.4 对移植的含义
+
+虚拟机需要**两个宿主回调**，不能自己造：
+
+```rust
+fn poll_input(&mut self, mode: u8, flags: u8) -> (i32, i32);  // 0x85
+fn now_ms(&mut self) -> i32;                                 // 0xFC
+```
+
+Python 版默认返回 `(-1, 0)`（没人操作）和「每次轮询 +16 ms」（60fps 一帧）。所以：
+
+- 剧情脚本照样跑得完（它们等的是计时器，不是输入）；
+- `TITLE` / `BGMMODE` / `CGMODE` / `SEXMODE` 会一直空转 —— **这不是 bug，是它们本来就在等玩家点**。
+
+## 11. 加载器 `FUN_00434b50`（顺便把文件头钉死了）
+
+`0x02 CMDNAME`（`FUN_004363e0`）会先把「模块名 → 当前偏移」记进 `vm+0x4F`（步长 13）
+和 `vm+0x12C`（u32 数组），然后调用加载器 `FUN_00434b50(vm, name)`：
+
+```c
+iVar6 = FUN_00430e00(vm->archive, name, 0);   // 找成员
+size  = FUN_004310b0(vm->archive);
+buf   = GlobalAlloc(0x40, size + 4);
+FUN_00431070(vm->archive, buf, size);         // 读出来
+FUN_00444f60(name, buf, size);                // 解密
+magic = swap16(*(u16*)(buf + 4));             // 41 个文件全是 0x9597
+```
+
+| magic | 变换 | 有标签表 |
+|---|---|---|
+| `0x9597` | 每个字节循环左移 6 位 | 是 |
+| `0x89CE` | 每个字节 XOR `buf[6]` | 是 |
+| `0x97D1` | 每个字节取反 | 是 |
+| `0x8DF7` | 不变（但置错误标志）| — |
+| 其它 | 不变 | 否 |
+
+有标签表时：
+
+```c
+n = (*(u32*)buf - 8) / 4;                     // 文件头 8 字节
+label[i] = buf + *(u32*)(buf + 8 + i*4);      // 相对偏移 -> 绝对指针
+memmove(buf, buf + 8 + n*4, size - 8 - n*4);  // 把代码往前挪，盖掉文件头
+vm->code_base = buf;
+```
+
+这就是 `head_len = 8 + 4n` 的出处，也解释了为什么标签值全都是**相对代码基址**的偏移。
