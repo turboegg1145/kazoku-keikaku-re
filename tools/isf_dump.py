@@ -18,11 +18,12 @@ import isf_vm
 MENU = {"TITLE.ISF", "BGMMODE.ISF", "CGMODE.ISF", "SEXMODE.ISF"}
 
 
-def dump_one(name, blob, secret, steps):
+def dump_one(name, blob, secret, steps, modules=None):
     plain, head_len, _ = decrypt_isf(blob, secret)
     n = (head_len - 8) // 4
     labels = list(struct.unpack_from("<%dI" % n, plain, 8)) if n > 0 else []
-    vm = isf_vm.VM(plain, head_len, labels, steps=steps)
+    vm = isf_vm.VM(plain, head_len, labels, steps=steps, modules=modules,
+                   name=name.rsplit(".", 1)[0].upper())
     try:
         vm.run()
         halt = "ok"
@@ -45,12 +46,16 @@ def main(argv):
 
     secret = find_secret(open(argv[1], "rb").read())
     arc = load_archive(argv[2])
+    modules = isf_vm.load_modules(argv[1], argv[2])
     names = sorted(k for k in arc if k.upper().endswith(".ISF"))
+    only = argv[4].upper() if len(argv) > 4 and not argv[4].startswith("--") else None
+    if only:
+        names = [n for n in names if n.upper().startswith(only)]
     total_text = 0
     total_step = 0
     rows = []
     for name in names:
-        vm, halt = dump_one(name, arc[name], secret, steps)
+        vm, halt = dump_one(name, arc[name], secret, steps, modules)
         total_text += len(vm.texts)
         total_step += vm.steps
         rows.append((name, halt, vm.steps, len(vm.texts)))

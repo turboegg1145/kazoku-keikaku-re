@@ -129,12 +129,13 @@ pub fn find_secret(exe: &[u8]) -> Result<&[u8]> {
     Ok(&exe[pos..pos + 2048])
 }
 
+#[derive(Clone)]
 pub struct Script {
     /// 解密后的完整明文（含 8 字节头 + 标签表 + 字节码）
-    pub plain: Vec<u8>,
+    pub plain: std::rc::Rc<Vec<u8>>,
     pub head_len: usize,
     /// 标签表，值相对代码基址
-    pub labels: Vec<u32>,
+    pub labels: std::rc::Rc<Vec<u32>>,
 }
 
 impl Script {
@@ -151,8 +152,12 @@ impl Script {
             return Err(Error(format!("head_len 异常: {:#x}", head_len)));
         }
         let n = (head_len - 8) / 4;
-        let labels = (0..n).map(|i| u32le(&plain, 8 + i * 4)).collect();
-        Ok(Script { plain, head_len, labels })
+        let labels: Vec<u32> = (0..n).map(|i| u32le(&plain, 8 + i * 4)).collect();
+        Ok(Script {
+            plain: std::rc::Rc::new(plain),
+            head_len,
+            labels: std::rc::Rc::new(labels),
+        })
     }
 }
 
@@ -237,6 +242,8 @@ pub enum Event {
     Image { index: u32, name: String },
     CmdName(String),
     VoiceArchive(String),
+    /// `0x01`：跳到另一个剧本（场景切换，不返回）。
+    JumpScript(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,6 +257,8 @@ pub enum Halt {
     BadLength { at: usize, len: usize },
     OutOfRange { at: usize },
     BadLabel(u32),
+    /// `--once`：剧本跳转回到了已经走过的剧本（一轮通关结束）。
+    ScriptLoop(String),
 }
 
 impl std::fmt::Display for Halt {
@@ -262,6 +271,7 @@ impl std::fmt::Display for Halt {
             Halt::BadLength { at, len } => write!(f, "bad length {} at {:#x}", len, at),
             Halt::OutOfRange { at } => write!(f, "code pointer {:#x} out of range", at),
             Halt::BadLabel(v) => write!(f, "label {} out of range", v),
+            Halt::ScriptLoop(n) => write!(f, "回到已走过的剧本 {}", n),
         }
     }
 }
@@ -337,10 +347,10 @@ pub fn decode_cp932(raw: &[u8]) -> String {
     s.into_owned()
 }
 
-pub struct Vm<'a> {
-    plain: &'a [u8],
+pub struct Vm {
+    plain: std::rc::Rc<Vec<u8>>,
     base: usize,
-    labels: &'a [u32],
+    labels: std::rc::Rc<Vec<u32>>,
     pub code: usize,
     pub vars: Vec<i32>,
     ret: Vec<usize>,
@@ -354,14 +364,31 @@ pub struct Vm<'a> {
     rng: u32,
     /// 位数组（引擎 vm+0x554）：0x31 写、0x33/0x3B 读。
     pub bits: Vec<u8>,
+    /// `0x02 CALLMOD` 能调用的其他模块（名字 -> 已解密脚本）。
+    pub modules: std::collections::HashMap<String, std::rc::Rc<Script>>,
+    /// 当前模块名。
+    pub module: String,
+    /// 模块调用栈：(返回后模块名, 返回偏移)。对应引擎 vm+0x4F/vm+0x12C。
+    mod_stack: Vec<(String, usize)>,
+    /// 输入状态字节（引擎 vm+0x549/0x54A/0x54C/0x54D/0x54E），0x3A 读它们。
+    pub b549: u8,
+    pub b54a: u8,
+    pub b54c: u8,
+    pub b54d: u8,
+    pub b54e: u8,
+    /// 无人值守：0x85 每次轮询都当作「点了第一个热区」。
+    pub auto: bool,
+    /// 已经执行过的剧本（`0x01` 跳转）。`stop_on_repeat` 为真时，回到走过的剧本就停。
+    pub visited: std::collections::HashSet<String>,
+    pub stop_on_repeat: bool,
 }
 
-impl<'a> Vm<'a> {
-    pub fn new(script: &'a Script, limit: u64) -> Vm<'a> {
+impl Vm {
+    pub fn new(script: &Script, limit: u64) -> Vm {
         Vm {
-            plain: &script.plain,
+            plain: script.plain.clone(),
             base: script.head_len,
-            labels: &script.labels,
+            labels: script.labels.clone(),
             code: script.head_len,
             vars: vec![0; MAX_VARS],
             ret: Vec::new(),
@@ -374,6 +401,45 @@ impl<'a> Vm<'a> {
             voice: None,
             rng: 0x1234_5678,
             bits: vec![0; 0x10000],
+            modules: Default::default(),
+            module: String::new(),
+            mod_stack: Vec::new(),
+            b549: 0,
+            b54a: 0,
+            b54c: 0,
+            b54d: 0,
+            b54e: 0,
+            auto: true,
+            visited: Default::default(),
+            stop_on_repeat: false,
+        }
+    }
+
+    /// 挂上可调用模块表并记录当前模块名。
+    pub fn with_modules(
+        mut self,
+        mods: std::collections::HashMap<String, std::rc::Rc<Script>>,
+        name: &str,
+    ) -> Vm {
+        self.modules = mods;
+        self.module = name.to_string();
+        self.visited.insert(name.to_string());
+        self
+    }
+
+    /// 切换模块：等价于引擎 FUN_00434B50 的「重定位标签 + PC 归零」。
+    /// 变量和位数组是全局的，不清。
+    fn load_module(&mut self, name: &str) -> bool {
+        match self.modules.get(name) {
+            Some(s) => {
+                self.plain = s.plain.clone();
+                self.labels = s.labels.clone();
+                self.base = s.head_len;
+                self.code = s.head_len;
+                self.module = name.to_string();
+                true
+            }
+            None => false,
         }
     }
 
@@ -391,13 +457,13 @@ impl<'a> Vm<'a> {
     }
 
     fn take_u16(&mut self) -> u16 {
-        let v = u16le(self.plain, self.code);
+        let v = u16le(&self.plain, self.code);
         self.code += 2;
         v
     }
 
     fn take_u32(&mut self) -> u32 {
-        let v = u32le(self.plain, self.code);
+        let v = u32le(&self.plain, self.code);
         self.code += 4;
         v
     }
@@ -484,7 +550,42 @@ impl<'a> Vm<'a> {
     fn exec(&mut self, op: u8, end: usize) -> std::result::Result<bool, Halt> {
         match op {
             0x00 => Ok(false),
-            0x03 => Err(Halt::End),
+            0x01 => {
+                // FUN_004363A0：跳转剧本。先把模块深度/返回栈清零，再载入新剧本。
+                let name = ascii_of(&self.plain[self.code..end]);
+                self.events.push(Event::JumpScript(name.clone()));
+                if self.stop_on_repeat && !self.visited.insert(name.clone()) {
+                    return Err(Halt::ScriptLoop(name));
+                }
+                self.ret.clear();
+                self.mod_stack.clear();
+                Ok(self.load_module(&name))
+            }
+            0x02 => {
+                // FUN_004363E0：调用模块，返回地址 = 本指令末尾。
+                let name = ascii_of(&self.plain[self.code..end]);
+                self.events.push(Event::CmdName(name.clone()));
+                if self.modules.contains_key(&name) {
+                    let ret = end - self.base;
+                    let caller = self.module.clone();
+                    self.load_module(&name);
+                    self.mod_stack.push((caller, ret));
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            0x03 => {
+                // FUN_00436460：模块返回；栈空即整个脚本结束。
+                match self.mod_stack.pop() {
+                    Some((name, ret)) => {
+                        self.load_module(&name);
+                        self.code = self.base + ret;
+                        Ok(true)
+                    }
+                    None => Err(Halt::End),
+                }
+            }
             0x04 => {
                 let l = self.take_u16();
                 self.jump_label(l).map_err(|_| Halt::BadLabel(l as u32))?;
@@ -644,7 +745,12 @@ impl<'a> Vm<'a> {
                 let mode = self.take_u8();
                 let flags = self.take_u8();
                 if flags & 2 == 0 {
-                    let (spot, ev) = self.host.poll_input(mode, flags & 1);
+                    let (spot, ev) = if self.auto {
+                        // 无人值守：当作点了第一个热区，把剧本一路推到底。
+                        (0, 2)
+                    } else {
+                        self.host.poll_input(mode, flags & 1)
+                    };
                     self.set_var(va, spot);
                     self.set_var(vb, ev);
                 }
@@ -674,17 +780,15 @@ impl<'a> Vm<'a> {
                 self.set_var(idx, v);
                 Ok(false)
             }
-            0x02 | 0x56 | 0xF0 => {
+            0x56 => {
+                let index = u32le(&self.plain, self.code);
+                let name = ascii_of(&self.plain[self.code + 4..end]);
+                self.events.push(Event::Image { index, name });
+                Ok(false)
+            }
+            0xF0 => {
                 let s = ascii_of(&self.plain[self.code..end]);
-                match op {
-                    0x02 => self.events.push(Event::CmdName(s)),
-                    0x56 => {
-                        let index = u32le(self.plain, self.code);
-                        let name = ascii_of(&self.plain[self.code + 4..end]);
-                        self.events.push(Event::Image { index, name });
-                    }
-                    _ => self.events.push(Event::VoiceArchive(s)),
-                }
+                self.events.push(Event::VoiceArchive(s));
                 Ok(false)
             }
             _ => {
@@ -694,14 +798,29 @@ impl<'a> Vm<'a> {
         }
     }
 
-    /// `0x3A`：系统条件。没模拟的一律 false。
+    /// `0x3A`：系统条件（FUN_004383D0，跳转表 0x438658，共 16 个系统号）。
+    /// 每个分支都是「拿一个全局/引擎字段和操作数比」；默认值全 0（无人操作、无存档）。
     fn sys_test(&mut self, sid: u8, arg: u8) -> bool {
         match sid {
-            0x0E => {
-                // 输入状态位（+0x54D | 2）。无人值守时当作「已点击」。
-                3 == arg
+            0x00 => 0 == arg as i32,
+            0x01 => false, // 鼠标边沿：d4=0、b8=0 时三个分支都不成立
+            0x02..=0x07 => 0 == (if arg == 0 { 1 } else { 0 }),
+            0x08 => {
+                let held = if self.b54c != 0 { 1 } else { self.b549 };
+                (held != 0) == (arg == 0)
             }
             0x0A => arg != 0,
+            0x0B => false == (arg != 0),
+            0x0C => (self.b54a == 1) == (arg == 0),
+            0x0D => false, // 文字管理器空闲（0）≠ 1/2
+            0x0E => {
+                let mut al = self.b54d;
+                if self.b54e == 1 && self.b54c == 0 {
+                    al |= 2;
+                }
+                al == arg
+            }
+            0x0F => false == (arg != 0),
             _ => false,
         }
     }

@@ -209,8 +209,11 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
         None => None,
     };
 
-    let script = load_script(&format!("{}/KIZUNAR.EXE", dir), &format!("{}/ISF", dir), script_name)?;
-    let mut vm = isf::Vm::new(&script, steps);
+    let exe_path = format!("{}/KIZUNAR.EXE", dir);
+    let arc_path = format!("{}/ISF", dir);
+    let script = load_script(&exe_path, &arc_path, script_name)?;
+    let mods = load_modules(&exe_path, &arc_path)?;
+    let mut vm = isf::Vm::new(&script, steps).with_modules(mods, &stem_of(script_name));
     let halt = vm.run()?;
     println!("{}: {}  steps={}", script_name, halt, vm.steps);
 
@@ -280,13 +283,38 @@ fn load_script(exe: &str, arc: &str, name: &str) -> kzn::Result<isf::Script> {
     isf::Script::parse(archive.bytes(e), &secret)
 }
 
+/// 把所有 ISF 成员解密成 {模块名: Script}，供 0x02 CALLMOD 调用。
+fn load_modules(
+    exe: &str,
+    arc: &str,
+) -> kzn::Result<std::collections::HashMap<String, std::rc::Rc<isf::Script>>> {
+    let exe_bytes = std::fs::read(exe)?;
+    let secret = isf::find_secret(&exe_bytes)?.to_vec();
+    let archive = sm2mpx::Archive::open(arc)?;
+    let mut out = std::collections::HashMap::new();
+    for e in archive.entries.iter() {
+        let up = e.name.to_uppercase();
+        if !up.ends_with(".ISF") {
+            continue;
+        }
+        let stem = up.rsplit_once('.').map(|(a, _)| a).unwrap_or(&up).to_string();
+        out.insert(stem, std::rc::Rc::new(isf::Script::parse(archive.bytes(e), &secret)?));
+    }
+    Ok(out)
+}
+
+fn stem_of(name: &str) -> String {
+    name.rsplit_once('.').map(|(a, _)| a).unwrap_or(name).to_uppercase()
+}
+
 fn cmd_run(args: &[String]) -> kzn::Result<()> {
     if args.len() < 3 {
         usage();
     }
     let steps = flag(args, "--steps", 2_000_000);
     let script = load_script(&args[0], &args[1], &args[2])?;
-    let mut vm = isf::Vm::new(&script, steps);
+    let mods = load_modules(&args[0], &args[1])?;
+    let mut vm = isf::Vm::new(&script, steps).with_modules(mods, &stem_of(&args[2]));
     let halt = vm.run()?;
     let texts = vm.events.iter().filter(|e| matches!(e, isf::Event::Text { .. })).count();
     println!("{}  code {:#x}..{:#x}  labels={}", args[2], script.head_len, script.plain.len(), script.labels.len());
@@ -330,12 +358,22 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
         .map(|e| e.name.clone())
         .collect();
     names.sort();
+    let mut mods: std::collections::HashMap<String, std::rc::Rc<isf::Script>> = Default::default();
+    for e in archive.entries.iter() {
+        let up = e.name.to_uppercase();
+        if !up.ends_with(".ISF") {
+            continue;
+        }
+        let stem = up.rsplit_once('.').map(|(a, _)| a).unwrap_or(&up).to_string();
+        mods.insert(stem, std::rc::Rc::new(isf::Script::parse(archive.bytes(e), &secret)?));
+    }
     let mut total_text = 0usize;
     let mut total_steps = 0u64;
     for name in &names {
         let e = archive.find(name).unwrap();
         let script = isf::Script::parse(archive.bytes(e), &secret)?;
-        let mut vm = isf::Vm::new(&script, steps);
+        let mut vm = isf::Vm::new(&script, steps).with_modules(mods.clone(), &stem_of(name));
+        vm.stop_on_repeat = true;
         let halt = vm.run()?;
         let texts = vm.events.iter().filter(|e| matches!(e, isf::Event::Text { .. })).count();
         total_text += texts;
@@ -353,6 +391,7 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                 isf::Event::Image { index, name } => writeln!(f, "[IMAGE] {} {}", index, name)?,
                 isf::Event::CmdName(v) => writeln!(f, "[CMDNAME] {}", v)?,
                 isf::Event::VoiceArchive(v) => writeln!(f, "[VOICE_ARC] {}", v)?,
+                isf::Event::JumpScript(v) => writeln!(f, "[JUMP] {}", v)?,
             }
         }
         println!("{:<14} {:<38} steps={:<8} texts={:<5}", name, halt.to_string(), vm.steps, texts);

@@ -63,11 +63,17 @@ def ascii_of(payload):
 
 
 class VM:
-    def __init__(self, plain, head_len, labels, steps=500000, trace=False):
+    def __init__(self, plain, head_len, labels, steps=500000, trace=False,
+                 modules=None, name=None):
         self.plain = plain
         self.base = head_len
         self.labels = labels
         self.code = head_len
+        # 模块系统（0x02 CALLMOD / 0x03 END）：名字 -> (plain, head_len, labels)。
+        # 真引擎在 0x02 时调 FUN_00434b50 重新读档并解密，这里预先解好直接换。
+        self.modules = modules or {}
+        self.module = name
+        self.mod_stack = []          # [(返回后模块名, 返回偏移)]
         self.vars = [0] * MAX_VARS
         self.ret = []
         self.flags = {}
@@ -85,8 +91,12 @@ class VM:
         self.clock = 0
         # 0x85 的宿主回调：poll_input(mode, flags) -> (hotspot, event)
         self.poll_input = None
+        # 无人值守时自动点确认（导出剧本用）。真实运行时由宿主提供输入。
+        self.auto = True
         # 位数组（引擎 vm+0x554）：0x31 写、0x33/0x3B 读。存「读过/解锁」这类旗标。
         self.bits = bytearray(0x10000)
+        # 输入状态字节（引擎 vm+0x549/0x54A/0x54C/0x54D/0x54E），0x3A 会读它们。
+        self.b549 = self.b54a = self.b54c = self.b54d = self.b54e = 0
 
     # ---- 取指原语（对应 FUN_00434960/80/90）----
     def u8(self):
@@ -128,6 +138,19 @@ class VM:
         if 0 <= idx < MAX_VARS:
             self.vars[idx] = v
 
+    def load_module(self, name):
+        """切换到另一个 ISF 模块，PC 回到模块开头（对应 FUN_00434b50）。
+
+        真引擎会把标签表重定位成绝对地址并把 PC 指到缓冲区起点，这里等价地
+        换 plain/base/labels 三件套、code 归位。变量与位数组是全局的，不清。
+        """
+        plain, head_len, labels = self.modules[name]
+        self.plain = plain
+        self.base = head_len
+        self.labels = labels
+        self.code = head_len
+        self.module = name
+
     # ---- 主循环 ----
     def run(self):
         while True:
@@ -164,6 +187,9 @@ class VM:
         """
         if self.poll_input is not None:
             return self.poll_input(mode, flags)
+        if self.auto:
+            # 无人值守：每次轮询都当作「点了第一个热区」，用来把剧本一路推到结尾。
+            return (0, 2)
         return (-1, 0)
 
     def reset_timer(self):
@@ -176,7 +202,13 @@ class VM:
         if sid == 0x00:
             return g.get(0xAC, 0) == arg
         if sid == 0x01:
-            return False                      # 鼠标/输入模式，需要真实输入才有意义
+            # 鼠标按键边沿：0 = 刚按下，1 = 刚松开，2 = 按下中
+            d4, b8 = g.get(0xD4, 0), g.get(0xB8, 0)
+            if arg == 0:
+                return d4 == 0 and b8 != 0
+            if arg == 1:
+                return d4 != 0 and b8 == 0
+            return d4 != 0 and b8 != 0
         if sid in (0x02, 0x03, 0x04, 0x05, 0x06, 0x07):
             key = {0x02: 0xC8, 0x03: 0xD8, 0x04: 0xDC, 0x05: 0xE0,
                    0x06: 0xCC, 0x07: 0xD0}[sid]
@@ -185,11 +217,25 @@ class VM:
             return arg != 0
         if sid == 0x0B:
             return (g.get(0xA1, 0) != 0) == (arg != 0)
-        if sid == 0x0E:
-            # FUN_00435d50：输入状态位（+0x54D | 2）。无人值守时当作「已点击」。
-            return (3 if self.headless else 0) == arg
+        if sid == 0x08:
+            # FUN_00435c40(vm,0)：输入被锁（+0x54C）时返回 1，否则返回 +0x549
+            held = 1 if self.b54c else self.b549
+            return (held != 0) == (arg == 0)
         if sid == 0x0C:
-            return (g.get(0x54A, 0) == 1) == (arg == 0)
+            return (self.b54a == 1) == (arg == 0)
+        if sid == 0x0D:
+            # FUN_0043f970 → 文字管理器 FUN_00413fe0：8 个消息槽里有没有正在打字的。
+            # 返回 1 = 还在打字、2 = 打完待确认、0 = 空闲。剧本用「==1」原地等，
+            # 无人值守时按「瞬间打完」处理，直接返回 0。
+            return 0 == (1 if arg == 0 else 2)
+        if sid == 0x0E:
+            # FUN_00435d50：+0x54D；若 +0x54E==1 且 +0x54C==0 再或上 2
+            al = self.b54d
+            if self.b54e == 1 and self.b54c == 0:
+                al |= 2
+            return al == arg
+        if sid == 0x0F:
+            return (g.get(0x801, 0) != 0) == (arg != 0)
         return False
 
     def exec_op(self, op, end):
@@ -294,8 +340,14 @@ class VM:
                 return True
             return False
         if op == 0x03:
-            # FUN_00436460：结束脚本。CGLIB/INIT/SELOAD/TCG/YANE 用这个收尾。
-            raise Halt("END (0x03)")
+            # FUN_00436460：模块返回。深度为 0 时就是整个脚本结束（引擎置 error=1）。
+            # 非 0 时弹栈、重新载入调用者模块、PC 回到 0x02 之后那条指令。
+            if not self.mod_stack:
+                raise Halt("END (0x03)")
+            name, ret = self.mod_stack.pop()
+            self.load_module(name)
+            self.code = self.base + ret
+            return True
         if op == 0x04:
             self.jump_label(self.u16())
             return True
@@ -366,7 +418,30 @@ class VM:
             name = ascii_of(self.plain[self.code + 4:end])
             self.events.append(("IMAGE", idx, name))
             return False
-        if op in (0x02, 0xF0):
+        if op == 0x01:
+            # FUN_004363a0：跳转剧本。指令格式 01 <名字\0>。
+            # 先 FUN_00435b00 把「模块深度 / 返回栈 / 模块序号」全清零，再载入新剧本，
+            # 所以这是干净的场景切换（不返回）。剧情脚本末尾的 01 "SNR01" 就是下一章。
+            s = ascii_of(self.plain[self.code:end])
+            self.events.append(("JUMP", s))
+            self.ret.clear()
+            self.mod_stack.clear()
+            if s in self.modules:
+                self.load_module(s)
+                return True
+            return False
+        if op == 0x02:
+            # FUN_004363e0：调用模块。指令格式 02 <名字\0>，返回地址 = 本指令末尾。
+            # 引擎在进入时把调用者名字压到 vm+0x4f+depth*13、返回偏移压到 vm+0x12c，
+            # 然后 FUN_00434b50 载入新模块、PC 归零；0x03 时反向恢复。
+            s = ascii_of(self.plain[self.code:end])
+            self.events.append(("CMDNAME", s))
+            if s in self.modules:
+                self.mod_stack.append((self.module, end - self.base))
+                self.load_module(s)
+                return True
+            return False
+        if op == 0xF0:
             s = ascii_of(self.plain[self.code:end])
             self.events.append((NAMES[op], s))
             return False
@@ -386,6 +461,21 @@ def load(exe, arc_path, want):
     return key, plain, head_len, labels
 
 
+def load_modules(exe, arc_path):
+    """把所有 ISF 成员解密成 {模块名: (plain, head_len, labels)}，供 0x02 调用。"""
+    secret = find_secret(open(exe, "rb").read())
+    arc = load_archive(arc_path)
+    mods = {}
+    for name, blob in arc.items():
+        if not name.upper().endswith(".ISF"):
+            continue
+        plain, head_len, _ = decrypt_isf(blob, secret)
+        n = (head_len - 8) // 4
+        labels = list(struct.unpack_from("<%dI" % n, plain, 8)) if n > 0 else []
+        mods[name.rsplit(".", 1)[0].upper()] = (plain, head_len, labels)
+    return mods
+
+
 def main(argv):
     if len(argv) < 4:
         print(__doc__.strip())
@@ -398,7 +488,9 @@ def main(argv):
     if "--out" in argv:
         out = argv[argv.index("--out") + 1]
     key, plain, head_len, labels = load(argv[1], argv[2], argv[3])
-    vm = VM(plain, head_len, labels, steps=steps, trace=trace)
+    mods = load_modules(argv[1], argv[2])
+    vm = VM(plain, head_len, labels, steps=steps, trace=trace, modules=mods,
+            name=key.rsplit(".", 1)[0].upper())
     print("%s  code 0x%x..0x%x  labels=%d" % (key, head_len, len(plain), len(labels)))
     try:
         vm.run()
