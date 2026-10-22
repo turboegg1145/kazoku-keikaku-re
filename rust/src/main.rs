@@ -456,6 +456,11 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                 isf::Event::CmdName(v) => writeln!(f, "[CMDNAME] {}", v)?,
                 isf::Event::VoiceArchive(v) => writeln!(f, "[VOICE_ARC] {}", v)?,
                 isf::Event::JumpScript(v) => writeln!(f, "[JUMP] {}", v)?,
+                isf::Event::Bgm { name, mode } => writeln!(f, "[BGM] {} {}", name, mode)?,
+                isf::Event::BgmVolume { looping, volume } => {
+                    writeln!(f, "[BGM_VOL] {} {}", *looping as u8, volume)?
+                }
+                isf::Event::BgmLevel(v) => writeln!(f, "[BGM_LEVEL] {}", v)?,
             }
         }
         println!("{:<14} {:<38} steps={:<8} texts={:<5}", name, halt.to_string(), vm.steps, texts);

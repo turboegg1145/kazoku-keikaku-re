@@ -425,6 +425,24 @@ class VM:
             self.events.append(("TEXT", spk, txt, self.voice))
             self.voice = None
             return False
+        if op == 0x70:
+            # FUN_0043A690：BGM。NUL 结尾的名字 + 模式 u8；引擎把扩展名换成 .OGG
+            nul = self.plain.index(0, self.code, end)
+            raw = self.plain[self.code:nul].decode("ascii", "replace")
+            self.code = nul + 1
+            mode = self.u8()
+            stem = raw.rsplit(".", 1)[0]
+            self.events.append(("BGM", stem + ".OGG", mode))
+            return False
+        if op == 0x71:
+            # FUN_0043A9A0：<u8 循环> <操作数 音量>
+            looping = 1 if self.u8() == 0 else 0
+            self.events.append(("BGM_VOL", looping, self.val()))
+            return False
+        if op == 0x72:
+            # FUN_0043AAF0：音量操作数，< 1 表示停
+            self.events.append(("BGM_LEVEL", self.val()))
+            return False
         if op == 0x78:
             self.voice = ascii_of(self.plain[self.code:end])
             self.events.append(("VOICE", self.voice))

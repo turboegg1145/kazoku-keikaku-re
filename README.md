@@ -30,6 +30,7 @@
 - [移植评估（Rust + iOS）](docs/03-porting.md)
 - [指令全表与还原进度](docs/05-opcodes-todo.md)
 - [存档格式](docs/06-save.md)
+- [音频](docs/07-audio.md)
 - [负结果与踩坑记录](notes/negative-results.md)
 
 ## 工具

@@ -252,6 +252,13 @@ pub enum Event {
     VoiceArchive(String),
     /// `0x01`：跳到另一个剧本（场景切换，不返回）。
     JumpScript(String),
+    /// `0x70 <名字> <u8 mode>`：播放 BGM（WMSC 归档里的 OGG）。
+    /// mode 0 = 循环，1 = 单次，2 = 循环且从当前位置继续。
+    Bgm { name: String, mode: u8 },
+    /// `0x71 <u8 loop> <u32 音量>`：调整当前 BGM。
+    BgmVolume { looping: bool, volume: u32 },
+    /// `0x72 <u32 音量>`：0 表示停掉 BGM。
+    BgmLevel(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -830,6 +837,29 @@ impl Vm {
                         _ => return Ok(false),
                     }
                 }
+            }
+            0x70 => {
+                // FUN_0043A690：BGM。NUL 结尾的名字 + 模式 u8。
+                let raw = ascii_of(&self.plain[self.code..end]);
+                self.code += raw.len() + 1;
+                let mode = self.take_u8();
+                // 引擎用 _splitpath 取主名再拼 ".OGG"（脚本里写的是 "25.wav" 这种）
+                let stem = raw.rsplit_once('.').map(|(a, _)| a).unwrap_or(&raw);
+                self.events.push(Event::Bgm { name: format!("{}.OGG", stem), mode });
+                Ok(false)
+            }
+            0x71 => {
+                // FUN_0043A9A0：<u8 循环> <操作数 音量>
+                let looping = self.take_u8() == 0;
+                let volume = self.val() as u32;
+                self.events.push(Event::BgmVolume { looping, volume });
+                Ok(false)
+            }
+            0x72 => {
+                // FUN_0043AAF0：音量操作数，< 1 表示停
+                let level = self.val() as u32;
+                self.events.push(Event::BgmLevel(level));
+                Ok(false)
             }
             0x78 => {
                 let s = ascii_of(&self.plain[self.code..end]);
