@@ -7,6 +7,7 @@
 //! kzn dump  <KIZUNAR.EXE> <ISF归档> <输出目录> [--steps N]
 //! ```
 
+use kzn::render::{Canvas, ImageSource};
 use kzn::{ggd, isf, sav, sm2mpx};
 use std::io::Write;
 
@@ -197,11 +198,12 @@ fn cmd_hashes(args: &[String]) -> kzn::Result<()> {
     Ok(())
 }
 
-/// 把剧本的前几行台词渲染成 640×480 的 PNG。
+/// 把剧本的前几句台词渲染成 640×480 的 PNG。
 ///
-/// 这是「引擎能出画面」的最小证明：背景 + 文本框（FWIN.GG2）+ 字形光栅化。
+/// 画面来自 Player：它照引擎的 0x50/0x51/0x56/0x57 指令流维护 128 块面，
+/// 0 号面就是屏幕。台词本身按 0x2B 的文本 + FWIN.GG2 的窗框合成。
 fn cmd_shot(args: &[String]) -> kzn::Result<()> {
-    use kzn::render::Canvas;
+    use kzn::render::Player;
     if args.len() < 3 {
         usage();
     }
@@ -210,38 +212,24 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     let outdir = &args[2];
     let steps = flag(args, "--steps", 2_000_000);
     let lines = flag(args, "--lines", 8) as usize;
-    let size = flag(args, "--size", 26) as f32;
+    let size = flag(args, "--size", 24) as f32;
     let font_path = args
         .iter()
         .position(|a| a == "--font")
         .and_then(|i| args.get(i + 1))
         .cloned()
         .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
-    let bg_name = args
-        .iter()
-        .position(|a| a == "--bg")
-        .and_then(|i| args.get(i + 1))
-        .cloned();
 
     let font_data = std::fs::read(&font_path)?;
     let font = fontdue::Font::from_bytes(font_data.as_slice(), fontdue::FontSettings::default())
         .map_err(|e| kzn::Error(format!("字体加载失败 {}: {}", font_path, e)))?;
 
-    let ggd = sm2mpx::Archive::open(&format!("{}/GGD", dir))?;
-    let frame_img = ggd
-        .find("FWIN.GG2")
-        .map(|e| ggd::decode(ggd.bytes(e)))
-        .transpose()?
-        .ok_or_else(|| kzn::Error("归档里没有 FWIN.GG2".into()))?;
-    // 背景可能在 GGD 也可能在 GGD2，两个归档都查一下
-    let ggd2 = sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok();
-    // 背景：--bg 指定就固定；否则用 VM 记下来的「这句台词时的槽 0 图像」。
-    let mut bg_cache: std::collections::HashMap<String, ggd::Image> = Default::default();
-    if let Some(n) = &bg_name {
-        if let Some(img) = load_image(&ggd, ggd2.as_ref(), n)? {
-            bg_cache.insert(n.clone(), img);
-        }
-    }
+    let assets = Assets {
+        ggd: sm2mpx::Archive::open(&format!("{}/GGD", dir))?,
+        ggd2: sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok(),
+    };
+    // 窗框：GGD 里的 FWIN.GG2（552×152 的黑色圆角框，带外发光）
+    let frame = assets.image("FWIN.GG2");
 
     let exe_path = format!("{}/KIZUNAR.EXE", dir);
     let arc_path = format!("{}/ISF", dir);
@@ -251,82 +239,139 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     let halt = vm.run()?;
     println!("{}: {}  steps={}", script_name, halt, vm.steps);
 
-    let texts: Vec<(Option<u8>, String)> = vm
+    // 第 k 句台词在事件流里的下标
+    let text_at: Vec<usize> = vm
         .events
         .iter()
-        .filter_map(|e| match e {
-            isf::Event::Text { speaker, text, .. } => Some((*speaker, text.clone())),
-            _ => None,
-        })
+        .enumerate()
+        .filter(|(_, e)| matches!(e, isf::Event::Text { .. }))
+        .map(|(i, _)| i)
         .collect();
-    if texts.is_empty() {
+    if text_at.is_empty() {
         println!("这个脚本没有台词");
         return Ok(());
     }
-    std::fs::create_dir_all(outdir)?;
-
-    let (cw, chh) = (640usize, 480usize);
-    let bx = (cw - frame_img.width) / 2;
-    let by = chh - frame_img.height - 8;
     let only_at = args
         .iter()
         .position(|a| a == "--at")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse::<usize>().ok());
-    let mut written = 0;
-    for (i, (speaker, text)) in texts.iter().enumerate().take(lines) {
-        if let Some(n) = only_at {
-            if i != n {
+    let pick: Vec<usize> = match only_at {
+        Some(n) => text_at.get(n).copied().into_iter().collect(),
+        None => text_at.iter().take(lines).copied().collect(),
+    };
+    std::fs::create_dir_all(outdir)?;
+
+    let mut player = Player::new();
+    let mut written = 0usize;
+    for (i, ev) in vm.events.iter().enumerate() {
+        if let isf::Event::Text { speaker, text, .. } = ev {
+            if !pick.contains(&i) {
                 continue;
             }
-        }
-        let want_bg = bg_name
-            .clone()
-            .or_else(|| vm.text_bg.get(i).cloned().flatten());
-        if let Some(n) = &want_bg {
-            if !bg_cache.contains_key(n) {
-                if let Some(img) = load_image(&ggd, ggd2.as_ref(), n)? {
-                    bg_cache.insert(n.clone(), img);
-                }
+            let mut cv = player.frame();
+            draw_message(&mut cv, &font, frame.as_ref(), *speaker, text, size);
+            if args.iter().any(|a| a == "--ascii") {
+                println!("{}", cv.ascii(78, 26));
             }
+            let path = format!("{}/{:03}.png", outdir, written);
+            cv.write_png(&path)?;
+            let (lit, tb) = cv.bright_bbox(200);
+            let nl = cv
+                .wrap(&font, text, size, frame_width(frame.as_ref()) - 2.0 * INSET)
+                .len();
+            println!(
+                "  {:03} 亮像素={:<6} 文字bbox={:?} 行数={}  {}",
+                written,
+                lit,
+                tb,
+                nl,
+                text.chars().take(16).collect::<String>()
+            );
+            written += 1;
+            continue;
         }
-        let mut cv = Canvas::new(cw, chh);
-        cv.fill(0, 0, 0, 255);
-        if let Some(b) = want_bg.as_ref().and_then(|n| bg_cache.get(n)) {
-            cv.blit(b, 0, 0);
-        }
-        cv.blit(&frame_img, bx as isize, by as isize);
-        let inner = frame_img.width as f32 - 60.0;
-        let mut ty = by as isize + 22;
-        for line in cv.wrap(&font, text, size, inner).iter().take(4) {
-            cv.draw_text(&font, line, bx as isize + 30, ty, size, (255, 255, 255));
-            ty += (size * 1.3) as isize;
-        }
-        if let Some(sp) = speaker {
-            cv.draw_text(&font, &format!("S{}", sp), bx as isize + 30, by as isize - 24, 18.0, (255, 220, 160));
-        }
-        if args.iter().any(|a| a == "--ascii") {
-            println!("{}", cv.ascii(78, 26));
-        }
-        let path = format!("{}/{:03}.png", outdir, i);
-        cv.write_png(&path)?;
-        let (_n, _bbox) = cv.stats();
-        let (lit, tb) = cv.bright_bbox(200);
-        let nl = cv.wrap(&font, text, size, inner).len();
-        println!(
-            "  {:03} 亮像素={:<6} 文字bbox={:?} 行数={}  {}",
-            i,
-            lit,
-            tb,
-            nl,
-            text.chars().take(16).collect::<String>()
-        );
-        written += 1;
+        player.apply(ev, &assets);
     }
+    if !player.missing.is_empty() {
+        println!("归档里找不到的图 {} 张: {:?}", player.missing.len(), &player.missing[..player.missing.len().min(8)]);
+    }
+    println!(
+        "绘制 {} 次，cmd 分布 {:?}",
+        player.draws,
+        player.cmds.iter().map(|(k, v)| (format!("{:#04x}", k), *v)).collect::<Vec<_>>()
+    );
     println!("写了 {} 张 -> {}", written, outdir);
     Ok(())
 }
 
+/// 图片源：GGD（.GG0）与 GGD2（.GG2）。
+struct Assets {
+    ggd: sm2mpx::Archive,
+    ggd2: Option<sm2mpx::Archive>,
+}
+
+impl kzn::render::ImageSource for Assets {
+    fn image(&self, name: &str) -> Option<ggd::Image> {
+        for arc in [Some(&self.ggd), self.ggd2.as_ref()].into_iter().flatten() {
+            if let Some(e) = arc.find(name).or_else(|| arc.find_stem(name)) {
+                return ggd::decode(arc.bytes(e)).ok();
+            }
+        }
+        None
+    }
+}
+
+/// 文本框内边距（像素）。
+const INSET: f32 = 30.0;
+
+fn frame_width(frame: Option<&ggd::Image>) -> f32 {
+    frame.map(|f| f.width as f32).unwrap_or(552.0)
+}
+
+/// 把 FWIN.GG2 窗框和台词贴到画面上。
+fn draw_message(
+    cv: &mut Canvas,
+    font: &fontdue::Font,
+    frame: Option<&ggd::Image>,
+    speaker: Option<u8>,
+    text: &str,
+    size: f32,
+) {
+    let (fw, fh) = match frame {
+        Some(f) => (f.width, f.height),
+        None => (552, 152),
+    };
+    let fx = (cv.width - fw) / 2;
+    let fy = cv.height - fh - 8;
+    match frame {
+        Some(f) => cv.blit(f, fx as isize, fy as isize),
+        None => {
+            // 没有窗框时退化成半透明黑框，方便单独调文本排版
+            for y in fy..fy + fh {
+                for x in fx..fx + fw {
+                    cv.blend(x, y, 0, 0, 0, 200);
+                }
+            }
+        }
+    }
+    let inner = fw as f32 - 2.0 * INSET;
+    let mut ty = fy as isize + 22;
+    for line in cv.wrap(font, text, size, inner).iter().take(4) {
+        cv.draw_text(font, line, fx as isize + INSET as isize, ty, size, (255, 255, 255));
+        ty += (size * 1.35) as isize;
+    }
+    if let Some(sp) = speaker {
+        cv.draw_text(
+            font,
+            &format!("S{}", sp),
+            fx as isize + INSET as isize,
+            fy as isize - 24,
+            18.0,
+            (255, 220, 160),
+        );
+    }
+}
 fn load_script(exe: &str, arc: &str, name: &str) -> kzn::Result<isf::Script> {
     let exe_bytes = std::fs::read(exe)?;
     let secret = isf::find_secret(&exe_bytes)?.to_vec();
@@ -357,19 +402,6 @@ fn load_modules(
     Ok(out)
 }
 
-/// 在 GGD / GGD2 里找一张图并解码。
-fn load_image(
-    ggd: &sm2mpx::Archive,
-    ggd2: Option<&sm2mpx::Archive>,
-    name: &str,
-) -> kzn::Result<Option<ggd::Image>> {
-    for arc in [Some(ggd), ggd2].into_iter().flatten() {
-        if let Some(e) = arc.find(name).or_else(|| arc.find_stem(name)) {
-            return Ok(Some(ggd::decode(arc.bytes(e))?));
-        }
-    }
-    Ok(None)
-}
 
 fn stem_of(name: &str) -> String {
     name.rsplit_once('.').map(|(a, _)| a).unwrap_or(name).to_uppercase()

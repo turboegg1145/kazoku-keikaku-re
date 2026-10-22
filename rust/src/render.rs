@@ -1,9 +1,20 @@
-//! 一个最小的软件渲染器：RGBA 画布 + alpha 混合贴图 + 字形光栅化。
+//! 软件渲染器：面（surface）合成 + alpha 混合贴图 + 字形光栅化。
 //!
-//! 只做「把一张背景、一个文本框、几行字拼成 640×480」这件事，
-//! 不做缩放/旋转/特效——那些交给后面的平台层（iOS 上直接用 CoreGraphics 也行）。
+//! 上层是 Player：照着引擎的绘制指令（0x50/0x51/0x56/0x21/0x57）维护
+//! 128 块离屏面，0 号面就是屏幕。它只负责「摆位」，不负责「动」——
+//! 淡入淡出/擦除这类过渡在静态帧里等价于一次性贴完，过渡曲线留给平台层。
+//!
+//! 几何语义全部来自 KIZUNAR.EXE：
+//!
+//! ```text
+//! 0x50 FUN_0040c3c0  分配面 <idx> <w> <h>
+//! 0x51 FUN_0040d2e0  选显示面 + 滚动偏移 <idx> <x> <y>
+//! 0x56 FUN_0040d3a0  把图装进面 <idx> <名字>
+//! 0x57 FUN_004398c0  绘制（cmd 决定目标面与过渡方式）
+//! ```
 
 use crate::ggd::Image;
+use crate::isf::Event;
 
 pub struct Canvas {
     pub width: usize,
@@ -214,6 +225,82 @@ impl Canvas {
         s
     }
 
+    /// 把 B,G,R(,A) 的图像整张转成 RGBA 画布。
+    pub fn from_image(img: &Image) -> Canvas {
+        let mut cv = Canvas::new(img.width, img.height);
+        for i in 0..img.width * img.height {
+            let s = i * img.channels;
+            cv.pixels[i * 4] = img.pixels[s + 2];
+            cv.pixels[i * 4 + 1] = img.pixels[s + 1];
+            cv.pixels[i * 4 + 2] = img.pixels[s];
+            cv.pixels[i * 4 + 3] =
+                if img.channels == 4 && img.alpha { img.pixels[s + 3] } else { 255 };
+        }
+        cv
+    }
+
+    /// 把 src 的 (sx,sy,w,h) 贴到 (dx,dy)，越界自动裁剪。
+    pub fn blit_rect(&mut self, src: &Canvas, sx: i32, sy: i32, w: i32, h: i32, dx: i32, dy: i32) {
+        self.blit_rect_alpha(src, sx, sy, w, h, dx, dy, 255);
+    }
+
+    /// 同上，但整体再乘一个不透明度 level/255（对应 0x14/0x15 的擦除等级）。
+    pub fn blit_rect_alpha(
+        &mut self,
+        src: &Canvas,
+        sx: i32,
+        sy: i32,
+        w: i32,
+        h: i32,
+        dx: i32,
+        dy: i32,
+        level: u32,
+    ) {
+        if level == 0 || w <= 0 || h <= 0 {
+            return;
+        }
+        for j in 0..h {
+            let syy = sy + j;
+            if syy < 0 || syy >= src.height as i32 {
+                continue;
+            }
+            let ty = dy + j;
+            if ty < 0 || ty >= self.height as i32 {
+                continue;
+            }
+            for i in 0..w {
+                let sxx = sx + i;
+                if sxx < 0 || sxx >= src.width as i32 {
+                    continue;
+                }
+                let tx = dx + i;
+                if tx < 0 || tx >= self.width as i32 {
+                    continue;
+                }
+                let o = (syy as usize * src.width + sxx as usize) * 4;
+                let a = src.pixels[o + 3] as u32 * level / 255;
+                if a == 0 {
+                    continue;
+                }
+                self.blend(
+                    tx as usize,
+                    ty as usize,
+                    src.pixels[o] as u32,
+                    src.pixels[o + 1] as u32,
+                    src.pixels[o + 2] as u32,
+                    a,
+                );
+            }
+        }
+    }
+
+    /// 复制一块矩形区域成新画布（用于把大画面按滚动偏移裁成 640×480）。
+    pub fn crop(&self, sx: i32, sy: i32, w: usize, h: usize) -> Canvas {
+        let mut cv = Canvas::new(w, h);
+        cv.blit_rect(self, sx, sy, w as i32, h as i32, 0, 0);
+        cv
+    }
+
     pub fn write_png(&self, path: &str) -> crate::Result<()> {
         let file = std::fs::File::create(path)?;
         let w = std::io::BufWriter::new(file);
@@ -225,5 +312,197 @@ impl Canvas {
             .write_image_data(&self.pixels)
             .map_err(|e| crate::Error(e.to_string()))?;
         Ok(())
+    }
+}
+
+/// 图片来源：把成员名解析成一张解码好的图（GGD / GGD2 归档）。
+pub trait ImageSource {
+    fn image(&self, name: &str) -> Option<Image>;
+}
+
+/// 面合成器：把引擎的绘制指令流还原成 640×480 的画面。
+pub struct Player {
+    /// 128 块面，0 号是默认显示面。
+    pub surf: Vec<Option<Canvas>>,
+    /// 0x51 设的滚动偏移。
+    pub off: Vec<(i32, i32)>,
+    /// 当前显示面（引擎 window+0xc）。
+    pub display: usize,
+    /// 0x56 注册的图片名。
+    pub images: std::collections::HashMap<u32, String>,
+    /// 归档里找不到的图片名（每名只记一次）。
+    pub missing: Vec<String>,
+    /// 出现过的绘制 cmd 与次数（用来盯「还没实现的过渡」）。
+    pub cmds: std::collections::BTreeMap<u8, u64>,
+    /// 0x21 装进窗口对象的图（5 个窗口各最多 4 张）。
+    pub window: Vec<Vec<String>>,
+    /// 0x53/0x55 设的窗口底色。
+    pub win_color: (u8, u8, u8),
+    pub draws: u64,
+}
+
+impl Default for Player {
+    fn default() -> Player {
+        Player::new()
+    }
+}
+
+impl Player {
+    pub fn new() -> Player {
+        let mut surf: Vec<Option<Canvas>> = (0..128).map(|_| None).collect();
+        surf[0] = Some(Canvas::new(640, 480));
+        Player {
+            surf,
+            off: vec![(0, 0); 128],
+            display: 0,
+            images: Default::default(),
+            missing: Vec::new(),
+            cmds: Default::default(),
+            window: vec![Vec::new(); 5],
+            win_color: (0, 0, 0),
+            draws: 0,
+        }
+    }
+
+    /// 当前画面（显示面按滚动偏移裁成 640×480）。
+    pub fn frame(&self) -> Canvas {
+        let (ox, oy) = self.off[self.display];
+        match self.surf[self.display].as_ref() {
+            Some(c) => c.crop(ox, oy, 640, 480),
+            None => Canvas::new(640, 480),
+        }
+    }
+
+    /// 直接拿显示面的引用（偏移为 0 且显示面就是 0 号时可当屏幕用）。
+    pub fn screen(&self) -> Option<&Canvas> {
+        self.surf[self.display].as_ref()
+    }
+
+    /// 0x56：把图装进面。面已经够大就原地贴，不够大就换一块更大的再贴。
+    fn put_image(&mut self, idx: usize, img: &Image) {
+        let fits = match self.surf[idx].as_ref() {
+            Some(c) => c.width >= img.width && c.height >= img.height,
+            None => false,
+        };
+        if !fits {
+            let (w, h) = match self.surf[idx].as_ref() {
+                Some(c) => (c.width.max(img.width), c.height.max(img.height)),
+                None => (img.width, img.height),
+            };
+            let mut nc = Canvas::new(w, h);
+            if let Some(old) = self.surf[idx].take() {
+                nc.blit_rect(&old, 0, 0, old.width as i32, old.height as i32, 0, 0);
+            }
+            self.surf[idx] = Some(nc);
+        }
+        let src = Canvas::from_image(img);
+        if let Some(dst) = self.surf[idx].as_mut() {
+            dst.blit_rect(&src, 0, 0, img.width as i32, img.height as i32, 0, 0);
+        }
+    }
+
+    /// 面到面：把 src 的矩形贴到 dst 的 (dx,dy)。
+    #[allow(clippy::too_many_arguments)]
+    pub fn blit(
+        &mut self,
+        dst: usize,
+        src: usize,
+        sx: i32,
+        sy: i32,
+        w: i32,
+        h: i32,
+        dx: i32,
+        dy: i32,
+        level: u32,
+    ) {
+        if dst == src || dst >= 128 || src >= 128 {
+            return;
+        }
+        let s = match self.surf[src].take() {
+            Some(c) => c,
+            None => return,
+        };
+        // 单独跑一个剧本时，启动脚本（START.ISF）里分配的面还不存在。
+        // 引擎里这些面一直活着，所以这里按需补一块 640×480 的。
+        if self.surf[dst].is_none() {
+            let mut cv = Canvas::new(640, 480);
+            cv.fill(0, 0, 0, 255);
+            self.surf[dst] = Some(cv);
+        }
+        if let Some(d) = self.surf[dst].as_mut() {
+            d.blit_rect_alpha(&s, sx, sy, w, h, dx, dy, level);
+        }
+        self.surf[src] = Some(s);
+    }
+
+    /// 吃一条事件；返回 true 表示这条事件动过画面。
+    pub fn apply(&mut self, ev: &Event, src: &dyn ImageSource) -> bool {
+        match ev {
+            Event::Surface { index, w, h } => {
+                let idx = (*index & 0x7F) as usize;
+                if *w > 0 && *h > 0 {
+                    let mut cv = Canvas::new(*w as usize, *h as usize);
+                    cv.fill(0, 0, 0, 255);
+                    self.surf[idx] = Some(cv);
+                } else {
+                    self.surf[idx] = None;
+                }
+                true
+            }
+            Event::SurfaceRect { index, x, y } => {
+                let idx = (*index & 0x7F) as usize;
+                self.off[idx] = (*x, *y);
+                self.display = idx;
+                true
+            }
+            Event::Image { index, name } => {
+                self.images.insert(*index, name.clone());
+                let idx = (*index & 0x7F) as usize;
+                match src.image(name) {
+                    Some(img) => self.put_image(idx, &img),
+                    None => {
+                        if !self.missing.contains(name) {
+                            self.missing.push(name.clone());
+                        }
+                    }
+                }
+                true
+            }
+            Event::SurfaceImage { surface, names, .. } => {
+                let i = (*surface as usize).min(4);
+                self.window[i] = names.clone();
+                true
+            }
+            Event::WindowRect { r, g, b, .. } => {
+                self.win_color = (*r, *g, *b);
+                true
+            }
+            Event::WindowFx { r, g, b, .. } => {
+                self.win_color = (*r, *g, *b);
+                true
+            }
+            Event::Draw { cmd, img, x, y, w, h, dur, dx, dy, extra } => {
+                self.draws += 1;
+                *self.cmds.entry(*cmd).or_insert(0) += 1;
+                let s = (*img & 0x7F) as usize;
+                let d = self.display;
+                match cmd {
+                    // 0/1：面到面。第 6 个操作数是目标面。
+                    0 | 1 => {
+                        let dst = (*dur & 0x7F) as usize;
+                        self.blit(dst, s, *x, *y, *w, *h, *dx, *dy, 255);
+                    }
+                    // 0x14/0x15：按等级把源面混到画面上（擦除/淡入）。
+                    0x14 | 0x15 => {
+                        let lvl = extra.first().copied().unwrap_or(255).clamp(0, 255) as u32;
+                        self.blit(d, s, *x, *y, *w, *h, *dx, *dy, lvl);
+                    }
+                    // 其余 cmd 都是「过渡到最终状态」，静态帧等于贴满。
+                    _ => self.blit(d, s, *x, *y, *w, *h, *dx, *dy, 255),
+                }
+                true
+            }
+            _ => false,
+        }
     }
 }
