@@ -85,6 +85,8 @@ class VM:
         self.clock = 0
         # 0x85 的宿主回调：poll_input(mode, flags) -> (hotspot, event)
         self.poll_input = None
+        # 位数组（引擎 vm+0x554）：0x31 写、0x33/0x3B 读。存「读过/解锁」这类旗标。
+        self.bits = bytearray(0x10000)
 
     # ---- 取指原语（对应 FUN_00434960/80/90）----
     def u8(self):
@@ -269,6 +271,28 @@ class VM:
                     return False
                 if act == 0xFF:
                     return False
+        if op == 0x31:
+            # FUN_00423ac0：位数组第 bit 位，mode 0 清 / 1 置 / 2 翻转
+            bit = self.u16()
+            mode = self.u8()
+            if bit < len(self.bits):
+                if mode == 0:
+                    self.bits[bit] = 0
+                elif mode == 1:
+                    self.bits[bit] = 1
+                elif mode == 2:
+                    self.bits[bit] ^= 1
+            return False
+        if op in (0x33, 0x3B):
+            # FUN_00437750：if (bit != param) jump；0x33 传 0、0x3B 传 1
+            # 即 0x33 = 位为 1 时跳，0x3B = 位为 0 时跳
+            bit = self.u16()
+            idx = self.u16()
+            val = self.bits[bit] if bit < len(self.bits) else 0
+            if val == (0 if op == 0x3B else 1):
+                self.jump_label(idx)
+                return True
+            return False
         if op == 0x03:
             # FUN_00436460：结束脚本。CGLIB/INIT/SELOAD/TCG/YANE 用这个收尾。
             raise Halt("END (0x03)")

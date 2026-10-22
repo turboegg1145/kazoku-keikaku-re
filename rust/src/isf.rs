@@ -352,6 +352,8 @@ pub struct Vm<'a> {
     pub host: Box<dyn Host>,
     voice: Option<String>,
     rng: u32,
+    /// 位数组（引擎 vm+0x554）：0x31 写、0x33/0x3B 读。
+    pub bits: Vec<u8>,
 }
 
 impl<'a> Vm<'a> {
@@ -371,6 +373,7 @@ impl<'a> Vm<'a> {
             host: Box::new(Headless::default()),
             voice: None,
             rng: 0x1234_5678,
+            bits: vec![0; 0x10000],
         }
     }
 
@@ -525,8 +528,29 @@ impl<'a> Vm<'a> {
                 Ok(false)
             }
             0x31 => {
-                let _bit = self.take_u16();
-                let _mode = self.take_u8();
+                // FUN_00423ac0：位数组第 bit 位，mode 0 清 / 1 置 / 2 翻转
+                let bit = self.take_u16() as usize;
+                let mode = self.take_u8();
+                if bit < self.bits.len() {
+                    match mode {
+                        0 => self.bits[bit] = 0,
+                        1 => self.bits[bit] = 1,
+                        2 => self.bits[bit] ^= 1,
+                        _ => {}
+                    }
+                }
+                Ok(false)
+            }
+            0x33 | 0x3B => {
+                // FUN_00437750：if (bit != param) jump；0x33 传 0、0x3B 传 1
+                // 即 0x33 = 位为 1 时跳，0x3B = 位为 0 时跳
+                let bit = self.take_u16() as usize;
+                let l = self.take_u16();
+                let val = if bit < self.bits.len() { self.bits[bit] } else { 0 };
+                if val == u8::from(op != 0x3B) {
+                    self.jump_label(l).map_err(|_| Halt::BadLabel(l as u32))?;
+                    return Ok(true);
+                }
                 Ok(false)
             }
             0x3A => {
