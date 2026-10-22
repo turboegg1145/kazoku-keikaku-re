@@ -4,7 +4,7 @@
 
 - 引擎：D.O. 自研 **GDT**（Game Development Toolkit）。证据：字符串 `GDTMIDI`、类名 `CGDTWnd` / `CGDTPSData` / `CGDTPropertySheetSystem`、`(C) 2005 D.O. corp.`
 - 架构：Win32 + MFC 4.2 静态链接；GDI 绘制；DirectShow 播 MPEG；DirectSound / ACM 处理音频。
-- 资源：自定义归档 **SM2MPX10**；脚本 **ISF**；图像 **GGD/GG2**；音频 OGG Vorbis；视频 MPEG-1。
+- 资源：自定义归档 **SM2MPX10**；脚本 **ISF**；图像 **GGD（24bpp）/ GG0·GG2（32bpp BGRA）**；音频 OGG Vorbis；视频 MPEG-1。
 - 文本：原版 Shift-JIS；汉化版由 `kzn_sc.dll` 在运行时替换文本（未覆盖原文件）。
 
 ## 关键证据（REA / Ghidra）
@@ -45,6 +45,6 @@ ISF 是**两层加密的字节码**，不是加密文本：
 
 - [x] 定位 ISF 解码入口（已定位到算法并复现）
 - [x] 确认 ISF 是字节码还是加密文本（字节码）
-- [x] 解析 GGD 图像压缩（解码器 `FUN_0040b190`，50/50 成员精确解出）
+- [x] 解析 GGD / GG0 / GG2 图像（解码器 `FUN_0040b190` / `FUN_0040b8e0`，842/842 成员精确解出）
 - [ ] 解析 SAV 存档
 - [ ] 补全 93 种 opcode 的语义（已确认 7 种，覆盖高频指令）

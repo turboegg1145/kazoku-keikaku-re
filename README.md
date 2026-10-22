@@ -15,9 +15,9 @@
 | ISF 脚本（两层解密 + 指令流） | ✅ 通 |
 | 台词文本导出 | ✅ 62,298 条 |
 | OGG / MPEG-1 | ✅ 标准格式 |
-| GGD 图像（50 个成员） | ✅ **完全解开**，操作码表从 `FUN_0040b190` 抄出 |
-| GG0 / GG2 容器（792 个成员） | ⚠️ 头部已知，容器结构未解 |
-| 存档 SAV | ⚠️ 未解析 |
+| GGD 图像（50 个成员，24bpp） | ✅ **完全解开**，操作码表从 `FUN_0040b190` 抄出 |
+| GG0 / GG2 图像（792 个成员，32bpp BGRA） | ✅ **完全解开**，操作码表从 `FUN_0040b8e0` 抄出 |
+| 存档 SAV | ⚠️ 未解析（重写版可自定格式）|
 
 ## 文档
 
@@ -29,9 +29,9 @@
 ## 工具
 
 - `tools/sm2mpx.py` — SM2MPX10 归档列表/解包
-- `tools/ggd.py` — GGD 图像解码 / 编码 / 出 PNG（库 + 命令行）
+- `tools/ggd.py` — GGD / GG0 / GG2 图像解码 / 编码 / 出 PNG（库 + 命令行）
 - `tools/ggd_batch.py` — 批量把归档里的图导出成 PNG
-- `tools/ggd_probe.py` — GGD/GG2 头部与统计探针
+- `tools/test_ggd.py` — 不依赖游戏数据的自检（6 项，全部通过）
 - `tools/isf_crypto.py` — ISF 两层解密 + 指令流切分（库）
 - `tools/isf_text.py` — 导出全部剧本正文（需原版 EXE 提供密钥表）
 
@@ -41,8 +41,8 @@
 python3 tools/sm2mpx.py list GGD
 python3 tools/ggd.py GGD CG2_BAO out.png
 python3 tools/ggd_batch.py GGD out/
+python3 tools/test_ggd.py
 python3 tools/isf_text.py KIZUNAR.EXE ISF out/
-python3 tools/ggd_probe.py GGD MODORU
 ```
 
 > 本仓库只保存分析脚本与笔记，不包含游戏数据。

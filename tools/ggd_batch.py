@@ -1,7 +1,8 @@
-"""Batch-extract every decodable image from an SM2MPX10 archive to PNG.
+"""Batch-extract every image from an SM2MPX10 archive to PNG.
 
-    python3 tools/ggd_batch.py GGD out/            # all members
-    python3 tools/ggd_batch.py GGD out/ --only GGD  # skip the GGA00000 family
+    python3 tools/ggd_batch.py GGD out/
+    python3 tools/ggd_batch.py GGD out/ --only GGD    # 24bpp family only
+    python3 tools/ggd_batch.py GGD out/ --only GGA    # 32bpp GG0/GG2 only
 """
 
 import os
@@ -35,13 +36,13 @@ def main(argv):
             skipped += 1
             continue
         try:
-            w, h, px = ggd.decode(data)
+            w, h, px, ch = ggd.decode(data)
         except ggd.GGDError as e:
             print("FAIL %-14s %s" % (name, e))
             failed += 1
             continue
         dst = os.path.join(outdir, os.path.splitext(name)[0] + ".png")
-        ggd.write_png(dst, w, h, px)
+        ggd.write_png(dst, w, h, px, ch)
         ok += 1
     print("decoded %d, skipped %d, failed %d -> %s" % (ok, skipped, failed, outdir))
     return 0
