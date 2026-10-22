@@ -476,6 +476,72 @@ class VM:
             self.events.append(("TEXT", spk, txt, self.voice))
             self.voice = None
             return False
+        if op == 0x15:
+            # FUN_00436D80：选项文本 + 相对窗口基准的矩形
+            win = self.u8()
+            idx = self.u8()
+            x, y, w, h = self.val(), self.val(), self.val(), self.val()
+            raw = bytes(self.plain[self.code:end]).split(b"\x00")[0]
+            text = raw.decode("cp932", "replace")
+            self.code = end
+            self.events.append(("CHOICE", win, idx, x, y, w, h, text))
+            return False
+        if op == 0x16:
+            # FUN_00436E60 -> FUN_004182A0：打开选项窗口
+            win = self.u8()
+            count = self.val()
+            flags = self.u8()
+            self.events.append(("CHOICE_OPEN", win, count, flags))
+            return False
+        if op == 0x17:
+            # FUN_00436EC0 -> FUN_004183B0：复位窗口
+            self.events.append(("CHOICE_CLOSE", self.u8()))
+            return False
+        if op == 0x18:
+            # FUN_00436F00 -> FUN_004186C0：<u8 窗口> <u16 值> <u8 标志>
+            win = self.u8()
+            value = self.u16()
+            flags = self.u8()
+            self.events.append(("CHOICE_INPUT", win, value, flags))
+            return False
+        if op == 0x1A:
+            self.events.append(("CHOICE_CLEAR",))
+            return False
+        if op == 0x1B:
+            self.events.append(("CHOICE_SHUFFLE",))
+            return False
+        if op == 0x74:
+            # FUN_0043ABB0：停声道 + 按名字装音效
+            nul = self.plain.index(0, self.code, end)
+            name = ascii_of(self.plain[self.code:nul])
+            self.code = nul + 1
+            slot = self.val()
+            self.events.append(("SE_LOAD", slot, name))
+            return False
+        if op == 0x75:
+            slot = self.val()
+            param = self.val()
+            self.events.append(("SE_PLAY", slot, param))
+            return False
+        if op == 0x76:
+            self.events.append(("SE_STOP", self.val()))
+            return False
+        if op == 0x79:
+            self.events.append(("VOICE_PARAM", self.val()))
+            return False
+        if op == 0x7B:
+            slot = self.val()
+            value = self.val()
+            self.events.append(("SE_REPEAT", slot, value))
+            return False
+        if op == 0x7E:
+            which = self.u8()
+            index = self.u16()
+            self.events.append(("FLAG_VOICE", which, index))
+            return False
+        if op == 0x81:
+            self.events.append(("UI_MODE", self.u8()))
+            return False
         if op == 0x49:
             # FUN_00439000：把全局数组的一段写回存档块 27/28
             start = self.val()

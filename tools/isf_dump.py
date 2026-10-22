@@ -81,6 +81,40 @@ def main(argv):
                     who = "S%d" % spk if spk is not None else "-"
                     tag = voice or "-"
                     f.write("[TEXT] %-3s %-10s %s\n" % (who, tag, txt.replace("\n", "\\n")))
+                elif kind == "CHOICE":
+                    win, idx, x, y, w, h, text = rest
+                    f.write("[CHOICE] win=%d idx=%d rect=%d,%d,%d,%d text=%s\n"
+                            % (win, idx, x, y, w, h, text))
+                elif kind == "CHOICE_OPEN":
+                    win, count, flags = rest
+                    f.write("[CHOICE_OPEN] win=%d count=%d flags=%d\n" % (win, count, flags))
+                elif kind == "CHOICE_CLOSE":
+                    f.write("[CHOICE_CLOSE] win=%d\n" % rest[0])
+                elif kind == "CHOICE_INPUT":
+                    win, value, flags = rest
+                    f.write("[CHOICE_INPUT] win=%d value=%d flags=%d\n" % (win, value, flags))
+                elif kind == "CHOICE_CLEAR":
+                    f.write("[CHOICE_CLEAR]\n")
+                elif kind == "CHOICE_SHUFFLE":
+                    f.write("[CHOICE_SHUFFLE]\n")
+                elif kind == "SE_LOAD":
+                    slot, name = rest
+                    f.write("[SE_LOAD] slot=%d name=%s\n" % (slot, name))
+                elif kind == "SE_PLAY":
+                    slot, param = rest
+                    f.write("[SE_PLAY] slot=%d param=%d\n" % (slot, param))
+                elif kind == "SE_STOP":
+                    f.write("[SE_STOP] slot=%d\n" % rest[0])
+                elif kind == "VOICE_PARAM":
+                    f.write("[VOICE_PARAM] %d\n" % rest[0])
+                elif kind == "SE_REPEAT":
+                    slot, value = rest
+                    f.write("[SE_REPEAT] slot=%d value=%d\n" % (slot, value))
+                elif kind == "FLAG_VOICE":
+                    which, index = rest
+                    f.write("[FLAG_VOICE] which=%d idx=%d\n" % (which, index))
+                elif kind == "UI_MODE":
+                    f.write("[UI_MODE] %d\n" % rest[0])
                 elif kind in ("GSAVE", "GLOAD"):
                     which, start, count, x = rest
                     tag = "GSAVE" if kind == "GSAVE" else "GLOAD"

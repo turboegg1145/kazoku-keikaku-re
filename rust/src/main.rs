@@ -472,6 +472,35 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                     writeln!(f, "[BGM_VOL] {} {}", *looping as u8, volume)?
                 }
                 isf::Event::BgmLevel(v) => writeln!(f, "[BGM_LEVEL] {}", v)?,
+                isf::Event::Choice { window, index, x, y, w, h, text } => {
+                    writeln!(f, "[CHOICE] win={} idx={} rect={},{},{},{} text={}", window, index, x, y, w, h, text)?
+                }
+                isf::Event::ChoiceOpen { window, count, flags } => {
+                    writeln!(f, "[CHOICE_OPEN] win={} count={} flags={}", window, count, flags)?
+                }
+                isf::Event::ChoiceClose { window } => {
+                    writeln!(f, "[CHOICE_CLOSE] win={}", window)?
+                }
+                isf::Event::ChoiceInput { window, value, flags } => {
+                    writeln!(f, "[CHOICE_INPUT] win={} value={} flags={}", window, value, flags)?
+                }
+                isf::Event::ChoiceClear => writeln!(f, "[CHOICE_CLEAR]")?,
+                isf::Event::ChoiceShuffle => writeln!(f, "[CHOICE_SHUFFLE]")?,
+                isf::Event::SeLoad { name, slot } => {
+                    writeln!(f, "[SE_LOAD] slot={} name={}", slot, name)?
+                }
+                isf::Event::SePlay { slot, param } => {
+                    writeln!(f, "[SE_PLAY] slot={} param={}", slot, param)?
+                }
+                isf::Event::SeStop { slot } => writeln!(f, "[SE_STOP] slot={}", slot)?,
+                isf::Event::VoiceParam { value } => writeln!(f, "[VOICE_PARAM] {}", value)?,
+                isf::Event::SeRepeat { slot, value } => {
+                    writeln!(f, "[SE_REPEAT] slot={} value={}", slot, value)?
+                }
+                isf::Event::FlagFromVoice { which, index } => {
+                    writeln!(f, "[FLAG_VOICE] which={} idx={}", which, index)?
+                }
+                isf::Event::UiMode(m) => writeln!(f, "[UI_MODE] {}", m)?,
                 isf::Event::GlobalSave { start, count, x, which } => {
                     writeln!(f, "[GSAVE] which={} start={} count={} x={}", which, start, count, x)?
                 }

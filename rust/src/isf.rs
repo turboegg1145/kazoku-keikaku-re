@@ -259,6 +259,34 @@ pub enum Event {
     BgmVolume { looping: bool, volume: u32 },
     /// `0x72 <u32 音量>`：0 表示停掉 BGM。
     BgmLevel(u32),
+    /// `0x15 <u8 窗口> <u8 序号> <x> <y> <w> <h> <cp932 文本>`：登记一个选项。
+    /// 目标函数 FUN_00418560 把文本拷进窗口对象的 32 项表（每项 0x20 字节）。
+    Choice { window: u8, index: u8, x: i32, y: i32, w: i32, h: i32, text: String },
+    /// `0x16 <u8 窗口> <选项数> <u8 标志>`：打开选项窗口（FUN_004182A0）。
+    ChoiceOpen { window: u8, count: i32, flags: u8 },
+    /// `0x17 <u8 窗口>`：提交/结束这次选择（FUN_004183B0，清标志并重排）。
+    ChoiceClose { window: u8 },
+    /// `0x18 <u8 窗口> <u16 值> <u8 标志>`：选择输入模式（FUN_004186C0）。
+    /// 标志低 2 位：0 = 鼠标、1 = 键盘、2 = 取消、3 = 确认；值存进窗口对象 +0x1824。
+    ChoiceInput { window: u8, value: u16, flags: u8 },
+    /// `0x1A`：0..4 号窗口的 32 项选项表全部清空（FUN_004185D0）。
+    ChoiceClear,
+    /// `0x1B`：0..4 号窗口的选项矩形随机打乱（FUN_004185F0，用 _rand() 洗牌）。
+    ChoiceShuffle,
+    /// `0x74 <名字> <序号>`：把音效装进声道（FUN_0043ABB0，名字存在 vm+0x596+序号*13）。
+    SeLoad { name: String, slot: i32 },
+    /// `0x75 <序号> <参数>`：播放该声道（FUN_0043ACF0）。
+    SePlay { slot: i32, param: i32 },
+    /// `0x76 <序号>`：停掉该声道（FUN_0043AEB0 → FUN_00405B70）。
+    SeStop { slot: i32 },
+    /// `0x79 <参数>`：语音声道（0x20）的播放参数，0 表示停（FUN_0043B1A0）。
+    VoiceParam { value: i32 },
+    /// `0x7B <序号> <参数>`：设置声道重复次数，0 表示停（FUN_0043B230）。
+    SeRepeat { slot: i32, value: i32 },
+    /// `0x7E <u8 位/变量> <u16 序号>`：把「语音声道还在放吗」写进位数组/变量数组（FUN_0043B430）。
+    FlagFromVoice { which: u8, index: u16 },
+    /// `0x81 <u8 模式>`：UI 模式字节（FUN_00422BC0）。
+    UiMode(u8),
     /// `0x49 <start> <count> <x> <u8 which>`：把全局数组写回存档块 27/28。
     /// `which` 0 = 位数组（块 27），1 = 变量数组（块 28）；第三个操作数引擎读了但没用。
     GlobalSave { start: i32, count: i32, x: i32, which: u8 },
@@ -969,6 +997,55 @@ impl Vm {
                 self.events.push(Event::BgmLevel(level));
                 Ok(false)
             }
+            0x15 => {
+                // FUN_00436D80：选项文本 + 相对窗口基准的矩形
+                let window = self.take_u8();
+                let index = self.take_u8();
+                let x = self.val();
+                let y = self.val();
+                let w = self.val();
+                let h = self.val();
+                let mut raw = &self.plain[self.code..end];
+                if let Some(p) = raw.iter().position(|&b| b == 0) {
+                    raw = &raw[..p];
+                }
+                let text = decode_cp932(raw);
+                self.code = end;
+                self.events.push(Event::Choice { window, index, x, y, w, h, text });
+                Ok(false)
+            }
+            0x16 => {
+                // FUN_00436E60 → FUN_004182A0：打开选项窗口
+                let window = self.take_u8();
+                let count = self.val();
+                let flags = self.take_u8();
+                self.events.push(Event::ChoiceOpen { window, count, flags });
+                Ok(false)
+            }
+            0x17 => {
+                // FUN_00436EC0 → FUN_004183B0：复位窗口
+                let window = self.take_u8();
+                self.events.push(Event::ChoiceClose { window });
+                Ok(false)
+            }
+            0x18 => {
+                // FUN_00436F00 → FUN_004186C0：<u8 窗口> <u16 值> <u8 标志>
+                let window = self.take_u8();
+                let value = self.take_u16();
+                let flags = self.take_u8();
+                self.events.push(Event::ChoiceInput { window, value, flags });
+                Ok(false)
+            }
+            0x1A => {
+                // FUN_00436F70：0..4 号窗口的选项表全清
+                self.events.push(Event::ChoiceClear);
+                Ok(false)
+            }
+            0x1B => {
+                // FUN_00436FA0：0..4 号窗口的选项矩形随机洗牌
+                self.events.push(Event::ChoiceShuffle);
+                Ok(false)
+            }
             0x49 => {
                 // FUN_00439000：把全局数组的一段写回存档块 27/28。
                 let start = self.val();
@@ -1045,6 +1122,53 @@ impl Vm {
                     cmd, img: f[0], x: f[1], y: f[2], w: f[3], h: f[4], dur: f[5],
                     dx: f[6], dy: f[7], extra,
                 });
+                Ok(false)
+            }
+            0x74 => {
+                // FUN_0043ABB0：先把声道停掉，再按名字从归档里装音效
+                let raw = ascii_of(&self.plain[self.code..end]);
+                self.code += raw.len() + 1;
+                let slot = self.val();
+                self.events.push(Event::SeLoad { name: raw, slot });
+                Ok(false)
+            }
+            0x75 => {
+                // FUN_0043ACF0：<序号> <参数>
+                let slot = self.val();
+                let param = self.val();
+                self.events.push(Event::SePlay { slot, param });
+                Ok(false)
+            }
+            0x76 => {
+                // FUN_0043AEB0：停掉声道
+                let slot = self.val();
+                self.events.push(Event::SeStop { slot });
+                Ok(false)
+            }
+            0x79 => {
+                // FUN_0043B1A0：语音声道 0x20 的参数
+                let value = self.val();
+                self.events.push(Event::VoiceParam { value });
+                Ok(false)
+            }
+            0x7B => {
+                // FUN_0043B230：<序号> <重复次数/参数>
+                let slot = self.val();
+                let value = self.val();
+                self.events.push(Event::SeRepeat { slot, value });
+                Ok(false)
+            }
+            0x7E => {
+                // FUN_0043B430：<u8 位/变量> <u16 序号>
+                let which = self.take_u8();
+                let index = self.take_u16();
+                self.events.push(Event::FlagFromVoice { which, index });
+                Ok(false)
+            }
+            0x81 => {
+                // FUN_0043B570：<u8 模式>
+                let mode = self.take_u8();
+                self.events.push(Event::UiMode(mode));
                 Ok(false)
             }
             0x78 => {
