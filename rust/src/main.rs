@@ -83,6 +83,7 @@ fn main() {
         "run" => cmd_run(&args[1..]),
         "dump" => cmd_dump(&args[1..]),
         "sav" => cmd_sav(&args[1..]),
+        "audio" => cmd_audio(&args[1..]),
         _ => usage(),
     };
     if let Err(e) = rc {
@@ -557,6 +558,37 @@ fn save_beside(exe: &str) -> Option<sav::SaveFile> {
     let dir = std::path::Path::new(exe).parent()?;
     let data = std::fs::read(dir.join("KIZUNAR.SAV")).ok()?;
     sav::parse(&data).ok()
+}
+
+/// kzn audio <归档> <成员名> [--wav 输出路径] [--loop]
+/// 解码一段 Ogg Vorbis 并报告时长/峰值；给音频链路做验证用。
+fn cmd_audio(args: &[String]) -> kzn::Result<()> {
+    if args.len() < 2 {
+        usage();
+    }
+    let archive = sm2mpx::Archive::open(&args[0])?;
+    let want = &args[1];
+    let e = archive
+        .find(want)
+        .or_else(|| archive.find_stem(want))
+        .ok_or_else(|| format!("归档里没有 {}", want))?;
+    let bytes = archive.bytes(e);
+    let t = kzn::audio::decode_ogg(bytes)?;
+    let peak = t.samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+    println!(
+        "{}: {:.2} 秒  {} Hz  {} 声道  峰值 {}",
+        want,
+        t.duration(),
+        t.rate,
+        t.channels,
+        peak
+    );
+    if let Some(i) = args.iter().position(|a| a == "--wav") {
+        let out = args.get(i + 1).cloned().unwrap_or_else(|| "out.wav".to_string());
+        kzn::audio::write_wav(&out, &t.samples, t.rate, t.channels)?;
+        println!("  -> {}", out);
+    }
+    Ok(())
 }
 
 fn cmd_dump(args: &[String]) -> kzn::Result<()> {

@@ -6,6 +6,7 @@
 //! - `ggd`：GGD（24bpp）/ GG0、GG2（32bpp）图像解码
 //! - `isf`：ISF 脚本解密 + 虚拟机
 
+pub mod audio;
 pub mod ggd;
 pub mod render;
 pub mod isf;
@@ -23,6 +24,12 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<String> for Error {
+    fn from(e: String) -> Self {
+        Error(e)
+    }
+}
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
