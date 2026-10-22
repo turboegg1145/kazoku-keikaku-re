@@ -66,6 +66,9 @@ pub struct Image {
     /// B,G,R 或 B,G,R,A
     pub pixels: Vec<u8>,
     pub channels: usize,
+    /// 是否真的有 alpha 平面。GG0/GG2 的头部 flags bit0 决定；
+    /// 没有 alpha 平面时第 4 个字节是填充 0，应当按**不透明**处理。
+    pub alpha: bool,
 }
 
 pub fn decode(data: &[u8]) -> Result<Image> {
@@ -161,7 +164,7 @@ pub fn decode_ggd(data: &[u8]) -> Result<Image> {
             out.resize(n * 3, 0);
         }
     }
-    Ok(Image { width: w, height: ht, pixels: out, channels: 3 })
+    Ok(Image { width: w, height: ht, pixels: out, channels: 3, alpha: false })
 }
 
 /// 32bpp 复制：一次一个像素，所以重叠区间会自我复制（和 C 的循环一致）。
@@ -229,7 +232,7 @@ pub fn decode_gga(data: &[u8], width_override: Option<usize>) -> Result<Image> {
         }
     }
     out.truncate(end);
-    Ok(Image { width: w, height: ht, pixels: out, channels: 4 })
+    Ok(Image { width: w, height: ht, pixels: out, channels: 4, alpha: gga_has_alpha(data) })
 }
 
 /// 把 B,G,R[,A] 写成 PNG（PNG 要 R,G,B[,A]）。

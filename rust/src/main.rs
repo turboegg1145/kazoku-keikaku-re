@@ -195,19 +195,13 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
         .ok_or_else(|| kzn::Error("归档里没有 FWIN.GG2".into()))?;
     // 背景可能在 GGD 也可能在 GGD2，两个归档都查一下
     let ggd2 = sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok();
-    let bg = match &bg_name {
-        Some(n) => {
-            let mut found = None;
-            for arc in [Some(&ggd), ggd2.as_ref()].into_iter().flatten() {
-                if let Some(e) = arc.find(n).or_else(|| arc.find_stem(n)) {
-                    found = Some(ggd::decode(arc.bytes(e))?);
-                    break;
-                }
-            }
-            found
+    // 背景：--bg 指定就固定；否则用 VM 记下来的「这句台词时的槽 0 图像」。
+    let mut bg_cache: std::collections::HashMap<String, ggd::Image> = Default::default();
+    if let Some(n) = &bg_name {
+        if let Some(img) = load_image(&ggd, ggd2.as_ref(), n)? {
+            bg_cache.insert(n.clone(), img);
         }
-        None => None,
-    };
+    }
 
     let exe_path = format!("{}/KIZUNAR.EXE", dir);
     let arc_path = format!("{}/ISF", dir);
@@ -234,11 +228,31 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     let (cw, chh) = (640usize, 480usize);
     let bx = (cw - frame_img.width) / 2;
     let by = chh - frame_img.height - 8;
+    let only_at = args
+        .iter()
+        .position(|a| a == "--at")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok());
     let mut written = 0;
     for (i, (speaker, text)) in texts.iter().enumerate().take(lines) {
+        if let Some(n) = only_at {
+            if i != n {
+                continue;
+            }
+        }
+        let want_bg = bg_name
+            .clone()
+            .or_else(|| vm.text_bg.get(i).cloned().flatten());
+        if let Some(n) = &want_bg {
+            if !bg_cache.contains_key(n) {
+                if let Some(img) = load_image(&ggd, ggd2.as_ref(), n)? {
+                    bg_cache.insert(n.clone(), img);
+                }
+            }
+        }
         let mut cv = Canvas::new(cw, chh);
         cv.fill(0, 0, 0, 255);
-        if let Some(b) = &bg {
+        if let Some(b) = want_bg.as_ref().and_then(|n| bg_cache.get(n)) {
             cv.blit(b, 0, 0);
         }
         cv.blit(&frame_img, bx as isize, by as isize);
@@ -301,6 +315,20 @@ fn load_modules(
         out.insert(stem, std::rc::Rc::new(isf::Script::parse(archive.bytes(e), &secret)?));
     }
     Ok(out)
+}
+
+/// 在 GGD / GGD2 里找一张图并解码。
+fn load_image(
+    ggd: &sm2mpx::Archive,
+    ggd2: Option<&sm2mpx::Archive>,
+    name: &str,
+) -> kzn::Result<Option<ggd::Image>> {
+    for arc in [Some(ggd), ggd2].into_iter().flatten() {
+        if let Some(e) = arc.find(name).or_else(|| arc.find_stem(name)) {
+            return Ok(Some(ggd::decode(arc.bytes(e))?));
+        }
+    }
+    Ok(None)
 }
 
 fn stem_of(name: &str) -> String {

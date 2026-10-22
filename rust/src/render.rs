@@ -42,7 +42,7 @@ impl Canvas {
                 let b = img.pixels[s] as u32;
                 let g = img.pixels[s + 1] as u32;
                 let r = img.pixels[s + 2] as u32;
-                let a = if img.channels == 4 { img.pixels[s + 3] as u32 } else { 255 };
+                let a = if img.channels == 4 && img.alpha { img.pixels[s + 3] as u32 } else { 255 };
                 if a == 0 {
                     continue;
                 }

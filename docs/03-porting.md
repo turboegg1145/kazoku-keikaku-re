@@ -46,7 +46,8 @@ rust/src/main.rs     命令行：info / png / raw / hashes / run / dump / shot
 | 41 个剧本的事件流 | **41/41 完全一致**（每脚本 20 万步，含模块调用后的图像事件）|
 | 842 张图像解码 | **842/842 像素 sha256 完全一致** |
 | 主线剧本链 | `SNR00→…→SNR11→SNRC1→SNRC2→STAFF→SNRC3→TITLE`，一圈约 36,000 条台词 |
-| 渲染 | `kzn shot` 已经能出 640×480 的 PNG：背景 + 文本框 + 折行后的台词 |
+| 渲染 | `kzn shot --at N` 跑完整条剧本链，取第 N 句台词时的**真实背景**，出 640×480 PNG |
+| 场景模型 | 槽 0 = 当前背景（`0x56` 注册 → `0x84` 绑槽 → `0x57` 绘制），已接进渲染器 |
 
 ```
 kzn shot <游戏目录> SNR00.ISF out/shots --lines 8 --bg TBA01.GG2

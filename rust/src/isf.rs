@@ -347,6 +347,17 @@ pub fn decode_cp932(raw: &[u8]) -> String {
     s.into_owned()
 }
 
+/// 绘制槽（engine+0xE0，64 项 × 0x1C 字节）。
+#[derive(Clone, Copy, Default)]
+pub struct Slot {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    pub layer: u8,
+    pub image: u16,
+}
+
 pub struct Vm {
     plain: std::rc::Rc<Vec<u8>>,
     base: usize,
@@ -381,6 +392,12 @@ pub struct Vm {
     /// 已经执行过的剧本（`0x01` 跳转）。`stop_on_repeat` 为真时，回到走过的剧本就停。
     pub visited: std::collections::HashSet<String>,
     pub stop_on_repeat: bool,
+    /// 图像注册表：`0x56 <u32 idx> <名字>`。
+    pub images: std::collections::HashMap<u32, String>,
+    /// 绘制槽：`0x84`。
+    pub slots: Vec<Slot>,
+    /// 每条台词出现时的背景名（槽 0 的图像解析结果）。
+    pub text_bg: Vec<Option<String>>,
 }
 
 impl Vm {
@@ -412,7 +429,16 @@ impl Vm {
             auto: true,
             visited: Default::default(),
             stop_on_repeat: false,
+            images: Default::default(),
+            slots: vec![Slot::default(); 64],
+            text_bg: Vec::new(),
         }
+    }
+
+    /// 当前背景：槽 0 绑定的图像号，去注册表里查名字。
+    fn current_bg(&self) -> Option<String> {
+        let s = self.slots.first()?;
+        self.images.get(&(s.image as u32)).cloned()
     }
 
     /// 挂上可调用模块表并记录当前模块名。
@@ -625,7 +651,26 @@ impl Vm {
             }
             0x2B => {
                 let (spk, txt) = decode_text(&self.plain[self.code..end]);
+                self.text_bg.push(self.current_bg());
                 self.events.push(Event::Text { speaker: spk, text: txt, voice: self.voice.take() });
+                Ok(false)
+            }
+            0x84 => {
+                // FUN_0043B6F0：定义绘制槽（64 项，engine+0xE0）
+                // 84 <u8 slot> <u32 x> <u32 y> <u32 w> <u32 h> <u8 layer> <u16 img> <u8> <u8> <u8>
+                let slot = (self.take_u8() & 0x3F) as usize;
+                let x = self.take_u32();
+                let y = self.take_u32();
+                let w = self.take_u32();
+                let h = self.take_u32();
+                let layer = self.take_u8();
+                let image = self.take_u16();
+                let _f6 = self.take_u8();
+                let _f5 = self.take_u8();
+                let _f4 = self.take_u8();
+                if slot < self.slots.len() {
+                    self.slots[slot] = Slot { x, y, w, h, layer, image };
+                }
                 Ok(false)
             }
             0x31 => {
@@ -783,6 +828,7 @@ impl Vm {
             0x56 => {
                 let index = u32le(&self.plain, self.code);
                 let name = ascii_of(&self.plain[self.code + 4..end]);
+                self.images.insert(index, name.clone());
                 self.events.push(Event::Image { index, name });
                 Ok(false)
             }
