@@ -101,6 +101,10 @@ class VM:
         self.seen_n = 1024
         # 输入状态字节（引擎 vm+0x549/0x54A/0x54C/0x54D/0x54E），0x3A 会读它们。
         self.b549 = self.b54a = self.b54c = self.b54d = self.b54e = 0
+        self.b54b = 0
+        # 0x37 的两个环境开关：音频就绪（引擎 +0x81C）与文字绘制模式（DAT_0048940C）
+        self.audio_ready = True
+        self.text_mode = 0
         # 存档块 27/28：全局位数组 / 变量数组的落盘副本，0x49/0x4A 直接读写。
         self.sys27 = bytearray()
         self.sys28 = bytearray()
@@ -268,6 +272,133 @@ class VM:
         """0xFB：宿主也应把计时器清零。"""
         self.clock = 0
 
+    def sys_func(self, kind, arg):
+        """0x37：FUN_004378F0 的 20 个分支，和 Rust 侧逐行对应。"""
+        limit = {0x00: 3, 0x01: 3, 0x08: 3, 0x0E: 4}
+        if 0x02 <= kind <= 0x07 or 0x09 <= kind <= 0x0D or 0x0F <= kind <= 0x11 or kind == 0x13:
+            limit.setdefault(kind, 2)
+        if kind < 0x14 and arg >= limit.get(kind, 0xFF):
+            return
+        g = self.sys
+        ready = self.audio_ready
+        if kind == 0x00:
+            if arg == 0:
+                g[0xBC] = g[0xC0] = g[0xC4] = 1
+            elif arg == 1:
+                g[0xBC] = 1
+                g[0xC0] = 1
+                g[0xC4] = 0
+                if ready and g.get(0xB8, 0):
+                    if self.text_mode == 0:
+                        g[0xD4] = 0
+                        g[0xAC] = arg
+                        g[0xB8] = 1
+                        return
+                    if self.text_mode > 3:
+                        g[0xAC] = arg
+                        g[0xBC] = 1
+                        g[0xC0] = 1
+                        g[0xC4] = 0
+                        return
+                g[0xB8] = 0
+                g[0xAC] = arg
+                g[0xD4] = 1
+                return
+            elif arg == 2:
+                g[0xBC] = g[0xC0] = g[0xC4] = 0
+                g[0xAC] = arg
+                return
+            g[0xAC] = arg
+            return
+        if kind == 0x01:
+            if g.get(0xAC, 0) == 2:
+                return
+            if arg == 0 and ready:
+                g[0xD4] = 0
+            else:
+                g[0xD4] = 0
+                if g.get(0xBC, 0) or g.get(0xC4, 0):
+                    g[0xD4] = 1
+                if arg == 1:
+                    g[0xB8] = 0
+                    return
+            if ready and (g.get(0xC0, 0) or g.get(0xC4, 0)):
+                g[0xB8] = 1
+                return
+            g[0xB8] = 0
+            return
+        if kind == 0x02:
+            g[0xC8] = 1 if arg == 0 else 0
+            return
+        if kind == 0x03:
+            if ready and arg == 0 and (g.get(0xB8, 0) or g.get(0xAC, 0) != 2):
+                g[0xD8] = g[0xCC] = 1
+            else:
+                g[0xCC] = g[0xD8] = 0
+            return
+        if kind == 0x04:
+            if ready and arg == 0:
+                g[0xDC] = g[0xD0] = 1
+            else:
+                g[0xD0] = g[0xDC] = 0
+            return
+        if kind == 0x05:
+            g[0xE0] = 1 if (ready and arg == 0) else 0
+            return
+        if kind == 0x06:
+            g[0xCC] = 1 if (g.get(0xB8, 0) and arg == 0 and g.get(0xD8, 0)) else 0
+            return
+        if kind == 0x07:
+            g[0xD0] = 1 if (g.get(0xD4, 0) and arg == 0 and g.get(0xDC, 0)) else 0
+            return
+        if kind == 0x08:
+            if arg == 0:
+                self.b549 = 1
+                self.b54d &= ~2 & 0xFF
+                self.events.append(("SE_STOP", 0x20))
+            elif arg == 1:
+                self.b549 = 0
+            elif arg == 2:
+                self.b549 = 1
+                self.b54d &= ~2 & 0xFF
+            return
+        if kind == 0x09:
+            g[0xE4] = 1 if arg == 0 else 0
+            return
+        if kind == 0x0A:
+            g[0xE8] = 1 if arg != 0 else 0
+            return
+        if kind == 0x0C:
+            self.b54a = arg
+            return
+        if kind == 0x0D:
+            return
+        if kind == 0x0E:
+            if arg & 2:
+                self.b549 = 0
+            self.b54d = arg
+            return
+        if kind == 0x0F:
+            g[0x801] = 1 if arg != 0 else 0
+            return
+        if kind == 0x10:
+            self.b54b = 1 if arg != 0 else 0
+            return
+        if kind == 0x11:
+            g[0xEC] = 1 if arg != 0 else 0
+            return
+        if kind == 0x13:
+            g[0x2E5] = 1 if arg != 0 else 0
+            return
+        if kind == 0x15:
+            g[0xED] = 1 if arg != 0 else 0
+            return
+        if kind == 0x16:
+            g[0x2E4] = 1 if arg != 0 else 0
+            return
+        if kind == 0x17:
+            g[0xEE] = arg
+            return
     def sys_test(self, sid, arg):
         """0x3A：按引擎系统状态跳转（FUN_004383d0）。未模拟的状态一律返回 False。"""
         g = self.sys
@@ -581,8 +712,9 @@ class VM:
             self.events.append(("BITS_FILL", frm, to, value))
             return False
         if op == 0x37:
-            kind = self.val()
-            arg = self.val()
+            kind = self.val() & 0xFF
+            arg = self.val() & 0xFF
+            self.sys_func(kind, arg)
             self.events.append(("SYSFUNC", kind, arg))
             return False
         if op == 0x45:

@@ -502,6 +502,37 @@ pub struct Slot {
     pub image: u16,
 }
 
+/// 0x37 系统功能维护的全局开关（引擎里的 DAT_004891b8..004891ee / 004892e4/e5）。
+///
+/// 语义见 docs/07-sysfunc.md：这些字节被输入处理、文字绘制、以及 0x3A 系统条件读，
+/// 所以必须真的改，不能只记事件。
+#[derive(Clone, Debug)]
+pub struct SysFlags {
+    /// 下标 = 引擎全局地址的低 12 位：0x4891B8 → 0xB8，engine+0x801 → 0x801。
+    /// 和 Python 侧同一套编号，方便逐项对拍。
+    pub g: [u32; 0x1000],
+    /// engine+0x81C 里音频对象是否就绪（0x37 的 bVar1）。
+    pub audio_ready: bool,
+    /// DAT_0048940C：文字绘制模式（0 = 整串画，1 = 逐字画）。
+    pub text_mode: i32,
+}
+
+impl SysFlags {
+    pub fn new() -> SysFlags {
+        SysFlags { g: [0; 0x1000], audio_ready: true, text_mode: 0 }
+    }
+
+    #[inline]
+    pub fn get(&self, key: usize) -> u32 {
+        self.g[key & 0xFFF]
+    }
+
+    #[inline]
+    pub fn set(&mut self, key: usize, v: u32) {
+        self.g[key & 0xFFF] = v;
+    }
+}
+
 pub struct Vm {
     plain: std::rc::Rc<Vec<u8>>,
     base: usize,
@@ -535,6 +566,8 @@ pub struct Vm {
     /// 输入状态字节（引擎 vm+0x549/0x54A/0x54C/0x54D/0x54E），0x3A 读它们。
     pub b549: u8,
     pub b54a: u8,
+    /// 引擎 vm+0x54B（0x37 kind 0x10 写）。
+    pub b54b: u8,
     pub b54c: u8,
     pub b54d: u8,
     pub b54e: u8,
@@ -559,6 +592,8 @@ pub struct Vm {
     pub stop_texts: Option<usize>,
     /// 已经产生的台词数。
     pub text_count: usize,
+    /// 0x37 维护的全局开关。
+    pub sys: SysFlags,
 }
 
 impl Vm {
@@ -588,6 +623,7 @@ impl Vm {
             mod_stack: Vec::new(),
             b549: 0,
             b54a: 0,
+            b54b: 0,
             b54c: 0,
             b54d: 0,
             b54e: 0,
@@ -602,6 +638,7 @@ impl Vm {
             deadline: 0,
             stop_texts: None,
             text_count: 0,
+            sys: SysFlags::new(),
         }
     }
 
@@ -1201,9 +1238,10 @@ impl Vm {
             }
             0x37 => {
                 // FUN_004378F0：<功能号> <参数>，0..0x13 的大 switch
-                let kind = self.val();
-                let arg = self.val();
-                self.events.push(Event::SysFunc { kind, arg });
+                let kind = (self.val() & 0xFF) as u8;
+                let arg = (self.val() & 0xFF) as u8;
+                self.sys_func(kind, arg);
+                self.events.push(Event::SysFunc { kind: kind as i32, arg: arg as i32 });
                 Ok(false)
             }
             0x45 => {
@@ -1694,19 +1732,228 @@ impl Vm {
 
     /// `0x3A`：系统条件（FUN_004383D0，跳转表 0x438658，共 16 个系统号）。
     /// 每个分支都是「拿一个全局/引擎字段和操作数比」；默认值全 0（无人操作、无存档）。
-    fn sys_test(&mut self, sid: u8, arg: u8) -> bool {
-        match sid {
-            0x00 => 0 == arg as i32,
-            0x01 => false, // 鼠标边沿：d4=0、b8=0 时三个分支都不成立
-            0x02..=0x07 => 0 == (if arg == 0 { 1 } else { 0 }),
+    /// `0x37` 系统功能（FUN_004378F0）。两个操作数在引擎里都被截成字节。
+    ///
+    /// 参数有上限：0/1/8 必须 < 3，2..0xd / 0xf / 0x10 / 0x11 / 0x13 必须 < 2，
+    /// 0xe 必须 < 4；越界直接返回、什么都不做。
+    fn sys_func(&mut self, kind: u8, arg: u8) {
+        let limit = match kind {
+            0x00 | 0x01 | 0x08 => 3,
+            0x02..=0x07 | 0x09..=0x0D | 0x0F..=0x11 | 0x13 => 2,
+            0x0E => 4,
+            _ => 0xFF,
+        };
+        if kind < 0x14 && arg >= limit {
+            return;
+        }
+        let a = arg as u32;
+        let ready = self.sys.audio_ready;
+        match kind {
+            0x00 => match arg {
+                0 => {
+                    self.sys.set(0xBC, 1);
+                    self.sys.set(0xC0, 1);
+                    self.sys.set(0xC4, 1);
+                }
+                1 => {
+                    self.sys.set(0xBC, 1);
+                    self.sys.set(0xC0, 1);
+                    self.sys.set(0xC4, 0);
+                    if ready && self.sys.get(0xB8) != 0 {
+                        if self.sys.text_mode == 0 {
+                            self.sys.set(0xD4, 0);
+                            self.sys.set(0xAC, a);
+                            self.sys.set(0xB8, 1);
+                            return;
+                        }
+                        if self.sys.text_mode > 3 {
+                            self.sys.set(0xAC, a);
+                            self.sys.set(0xBC, 1);
+                            self.sys.set(0xC0, 1);
+                            self.sys.set(0xC4, 0);
+                            return;
+                        }
+                    }
+                    self.sys.set(0xB8, 0);
+                    self.sys.set(0xAC, a);
+                    self.sys.set(0xD4, 1);
+                    return;
+                }
+                2 => {
+                    self.sys.set(0xBC, 0);
+                    self.sys.set(0xC0, 0);
+                    self.sys.set(0xC4, 0);
+                    self.sys.set(0xAC, a);
+                    return;
+                }
+                _ => {}
+            },
+            0x01 => {
+                if self.sys.get(0xAC) == 2 {
+                    return;
+                }
+                if arg == 0 && ready {
+                    self.sys.set(0xD4, 0);
+                } else {
+                    self.sys.set(0xD4, 0);
+                    if self.sys.get(0xBC) != 0 || self.sys.get(0xC4) != 0 {
+                        self.sys.set(0xD4, 1);
+                    }
+                    if arg == 1 {
+                        self.sys.set(0xB8, 0);
+                        return;
+                    }
+                }
+                if ready && (self.sys.get(0xC0) != 0 || self.sys.get(0xC4) != 0) {
+                    self.sys.set(0xB8, 1);
+                    return;
+                }
+                self.sys.set(0xB8, 0);
+                return;
+            }
+            0x02 => {
+                self.sys.set(0xC8, (arg == 0) as u32);
+                return;
+            }
+            0x03 => {
+                if ready && arg == 0 && (self.sys.get(0xB8) != 0 || self.sys.get(0xAC) != 2) {
+                    self.sys.set(0xD8, 1);
+                    self.sys.set(0xCC, 1);
+                } else {
+                    self.sys.set(0xCC, 0);
+                    self.sys.set(0xD8, 0);
+                }
+                return;
+            }
+            0x04 => {
+                if ready && arg == 0 {
+                    self.sys.set(0xDC, 1);
+                    self.sys.set(0xD0, 1);
+                } else {
+                    self.sys.set(0xD0, 0);
+                    self.sys.set(0xDC, 0);
+                }
+                return;
+            }
+            0x05 => {
+                self.sys.set(0xE0, (ready && arg == 0) as u32);
+                return;
+            }
+            0x06 => {
+                let v = if self.sys.get(0xB8) != 0 && arg == 0 { (self.sys.get(0xD8) != 0) as u32 } else { 0 };
+                self.sys.set(0xCC, v);
+                return;
+            }
+            0x07 => {
+                let v = if self.sys.get(0xD4) != 0 && arg == 0 { (self.sys.get(0xDC) != 0) as u32 } else { 0 };
+                self.sys.set(0xD0, v);
+                return;
+            }
             0x08 => {
+                // FUN_00435C60：vm+0x549 = 模式；arg==1 时清 vm+0x54D 的 bit1
+                match arg {
+                    0 => {
+                        self.b549 = 1;
+                        self.b54d &= !2;
+                        self.events.push(Event::SeStop { slot: 0x20 });
+                    }
+                    1 => self.b549 = 0,
+                    2 => {
+                        self.b549 = 1;
+                        self.b54d &= !2;
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            0x09 => {
+                self.sys.set(0xE4, (arg == 0) as u32);
+                return;
+            }
+            0x0A => {
+                self.sys.set(0xE8, (arg != 0) as u32);
+                return;
+            }
+            0x0C => {
+                self.b54a = arg;
+                return;
+            }
+            0x0D => return, // 窗口激活模式，无画面意义
+            0x0E => {
+                // FUN_00435D70：bit1 置位时同时清 vm+0x549
+                if arg & 2 != 0 {
+                    self.b549 = 0;
+                }
+                self.b54d = arg;
+                return;
+            }
+            0x0F => {
+                self.sys.set(0x801, (arg != 0) as u32);
+                return;
+            }
+            0x10 => {
+                self.b54b = (arg != 0) as u8;
+                return;
+            }
+            0x11 => {
+                self.sys.set(0xEC, (arg != 0) as u32);
+                return;
+            }
+            0x13 => {
+                self.sys.set(0x2E5, (arg != 0) as u32);
+                return;
+            }
+            0x15 => {
+                self.sys.set(0xED, (arg != 0) as u32);
+                return;
+            }
+            0x16 => {
+                self.sys.set(0x2E4, (arg != 0) as u32);
+                return;
+            }
+            0x17 => {
+                self.sys.set(0xEE, a);
+                return;
+            }
+            _ => {},
+        }
+    }
+
+    /// `0x3A`：按引擎系统状态跳转（FUN_004383D0）。和 Python 侧逐条对齐。
+    fn sys_test(&mut self, sid: u8, arg: u8) -> bool {
+        let g = |k: usize| self.sys.get(k);
+        match sid {
+            0x00 => g(0xAC) == arg as u32,
+            0x01 => {
+                // 鼠标按键边沿：0 = 刚按下，1 = 刚松开，2 = 按下中
+                let (d4, b8) = (g(0xD4), g(0xB8));
+                match arg {
+                    0 => d4 == 0 && b8 != 0,
+                    1 => d4 != 0 && b8 == 0,
+                    _ => d4 != 0 && b8 != 0,
+                }
+            }
+            0x02..=0x07 => {
+                let key = match sid {
+                    0x02 => 0xC8,
+                    0x03 => 0xD8,
+                    0x04 => 0xDC,
+                    0x05 => 0xE0,
+                    0x06 => 0xCC,
+                    _ => 0xD0,
+                };
+                g(key) == if arg == 0 { 1 } else { 0 }
+            }
+            0x08 => {
+                // FUN_00435C40(vm,0)：输入被锁（+0x54C）时返回 1，否则返回 +0x549
                 let held = if self.b54c != 0 { 1 } else { self.b549 };
                 (held != 0) == (arg == 0)
             }
             0x0A => arg != 0,
-            0x0B => false == (arg != 0),
+            0x0B => (g(0xA1) != 0) == (arg != 0),
             0x0C => (self.b54a == 1) == (arg == 0),
-            0x0D => false, // 文字管理器空闲（0）≠ 1/2
+            // 文字管理器空闲（0）≠ 1/2；无人值守时按「瞬间打完」处理
+            0x0D => false,
             0x0E => {
                 let mut al = self.b54d;
                 if self.b54e == 1 && self.b54c == 0 {
@@ -1714,7 +1961,7 @@ impl Vm {
                 }
                 al == arg
             }
-            0x0F => false == (arg != 0),
+            0x0F => (g(0x801) != 0) == (arg != 0),
             _ => false,
         }
     }
