@@ -39,6 +39,7 @@ fn main() {
         "png" => cmd_png(&args[1..]),
         "raw" => cmd_raw(&args[1..]),
         "hashes" => cmd_hashes(&args[1..]),
+        "shot" => cmd_shot(&args[1..]),
         "run" => cmd_run(&args[1..]),
         "dump" => cmd_dump(&args[1..]),
         _ => usage(),
@@ -153,6 +154,119 @@ fn cmd_hashes(args: &[String]) -> kzn::Result<()> {
         }
     }
     eprintln!("ok={} fail={}", ok, bad);
+    Ok(())
+}
+
+/// 把剧本的前几行台词渲染成 640×480 的 PNG。
+///
+/// 这是「引擎能出画面」的最小证明：背景 + 文本框（FWIN.GG2）+ 字形光栅化。
+fn cmd_shot(args: &[String]) -> kzn::Result<()> {
+    use kzn::render::Canvas;
+    if args.len() < 3 {
+        usage();
+    }
+    let dir = &args[0];
+    let script_name = &args[1];
+    let outdir = &args[2];
+    let steps = flag(args, "--steps", 2_000_000);
+    let lines = flag(args, "--lines", 8) as usize;
+    let size = flag(args, "--size", 26) as f32;
+    let font_path = args
+        .iter()
+        .position(|a| a == "--font")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
+    let bg_name = args
+        .iter()
+        .position(|a| a == "--bg")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+
+    let font_data = std::fs::read(&font_path)?;
+    let font = fontdue::Font::from_bytes(font_data.as_slice(), fontdue::FontSettings::default())
+        .map_err(|e| kzn::Error(format!("字体加载失败 {}: {}", font_path, e)))?;
+
+    let ggd = sm2mpx::Archive::open(&format!("{}/GGD", dir))?;
+    let frame_img = ggd
+        .find("FWIN.GG2")
+        .map(|e| ggd::decode(ggd.bytes(e)))
+        .transpose()?
+        .ok_or_else(|| kzn::Error("归档里没有 FWIN.GG2".into()))?;
+    // 背景可能在 GGD 也可能在 GGD2，两个归档都查一下
+    let ggd2 = sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok();
+    let bg = match &bg_name {
+        Some(n) => {
+            let mut found = None;
+            for arc in [Some(&ggd), ggd2.as_ref()].into_iter().flatten() {
+                if let Some(e) = arc.find(n).or_else(|| arc.find_stem(n)) {
+                    found = Some(ggd::decode(arc.bytes(e))?);
+                    break;
+                }
+            }
+            found
+        }
+        None => None,
+    };
+
+    let script = load_script(&format!("{}/KIZUNAR.EXE", dir), &format!("{}/ISF", dir), script_name)?;
+    let mut vm = isf::Vm::new(&script, steps);
+    let halt = vm.run()?;
+    println!("{}: {}  steps={}", script_name, halt, vm.steps);
+
+    let texts: Vec<(Option<u8>, String)> = vm
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            isf::Event::Text { speaker, text, .. } => Some((*speaker, text.clone())),
+            _ => None,
+        })
+        .collect();
+    if texts.is_empty() {
+        println!("这个脚本没有台词");
+        return Ok(());
+    }
+    std::fs::create_dir_all(outdir)?;
+
+    let (cw, chh) = (640usize, 480usize);
+    let bx = (cw - frame_img.width) / 2;
+    let by = chh - frame_img.height - 8;
+    let mut written = 0;
+    for (i, (speaker, text)) in texts.iter().enumerate().take(lines) {
+        let mut cv = Canvas::new(cw, chh);
+        cv.fill(0, 0, 0, 255);
+        if let Some(b) = &bg {
+            cv.blit(b, 0, 0);
+        }
+        cv.blit(&frame_img, bx as isize, by as isize);
+        let inner = frame_img.width as f32 - 60.0;
+        let mut ty = by as isize + 22;
+        for line in cv.wrap(&font, text, size, inner).iter().take(4) {
+            cv.draw_text(&font, line, bx as isize + 30, ty, size, (255, 255, 255));
+            ty += (size * 1.3) as isize;
+        }
+        if let Some(sp) = speaker {
+            cv.draw_text(&font, &format!("S{}", sp), bx as isize + 30, by as isize - 24, 18.0, (255, 220, 160));
+        }
+        if args.iter().any(|a| a == "--ascii") {
+            println!("{}", cv.ascii(78, 26));
+        }
+        let path = format!("{}/{:03}.png", outdir, i);
+        cv.write_png(&path)?;
+        let (_n, _bbox) = cv.stats();
+        let (lit, tb) = cv.bright_bbox(200);
+        let nl = cv.wrap(&font, text, size, inner).len();
+        println!(
+            "  {:03} 亮像素={:<6} 文字bbox={:?} 行数={}  {}",
+            i,
+            lit,
+            tb,
+            nl,
+            text.chars().take(16).collect::<String>()
+        );
+        written += 1;
+    }
+    println!("写了 {} 张 -> {}", written, outdir);
     Ok(())
 }
 

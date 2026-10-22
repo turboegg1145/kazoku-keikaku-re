@@ -7,6 +7,7 @@
 //! - `isf`：ISF 脚本解密 + 虚拟机
 
 pub mod ggd;
+pub mod render;
 pub mod isf;
 pub mod sm2mpx;
 
