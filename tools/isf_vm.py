@@ -104,6 +104,8 @@ class VM:
         # 存档块 27/28：全局位数组 / 变量数组的落盘副本，0x49/0x4A 直接读写。
         self.sys27 = bytearray()
         self.sys28 = bytearray()
+        # 0xF1 设的等待时长（引擎 vm+0x7B4）
+        self.deadline = 0
 
     # ---- 取指原语（对应 FUN_00434960/80/90）----
     def u8(self):
@@ -135,6 +137,19 @@ class VM:
 
     def val(self):
         return self.operand(self.u32raw())
+
+    def take_str(self, end):
+        """读一个 NUL 结尾的 cp932 串（引擎 FUN_004349E0）。"""
+        if self.code >= end:
+            return ""
+        seg = self.plain[self.code:end]
+        nul = seg.index(0) if 0 in seg else len(seg)
+        # cp932 里 0xFF 之类会落到私用区（U+F8F3），统一丢掉，和 Rust 侧对齐
+        s = bytes(seg[:nul]).decode("cp932", "ignore")
+        s = "".join(ch for ch in s
+                    if ch != "\ufffd" and not ("\ue000" <= ch <= "\uf8ff"))
+        self.code = min(self.code + nul + 1, end)
+        return s
 
     # ---- 存档块 27/28 的全局数组读写（0x49/0x4A）----
     def global_load(self, start, count, which):
@@ -475,6 +490,176 @@ class VM:
             self.texts.append((spk, txt, self.voice))
             self.events.append(("TEXT", spk, txt, self.voice))
             self.voice = None
+            return False
+        if op == 0x13:
+            # FUN_00436B40：19 个字节
+            v = bytes(self.u8() for _ in range(19))
+            self.events.append(("RAW13", v.hex()))
+            return False
+        if op == 0x20:
+            # FUN_00436FD0 -> FUN_00414170
+            surf = self.u8()
+            a, b, c, d = self.val(), self.val(), self.val(), self.val()
+            flag = self.u8()
+            self.events.append(("SURF_PARAM", surf, a, b, c, d, flag))
+            return False
+        if op == 0x21:
+            # FUN_00437040：<面> <模式> + 最多 4 个名字
+            surf = self.u8()
+            mode = self.u8()
+            names = []
+            while self.code < end:
+                names.append(self.take_str(end))
+            self.events.append(("SURF_IMG", surf, mode, "|".join(names)))
+            return False
+        if op == 0x23:
+            idx = self.u8()
+            a, b = self.val(), self.val()
+            flag = self.u8()
+            self.events.append(("OBJ", idx, a, b, flag))
+            return False
+        if op == 0x25:
+            surf = self.u8()
+            flag = self.u8()
+            text = self.take_str(end)
+            self.code = end
+            self.events.append(("SURF_TEXT", surf, flag, text))
+            return False
+        if op == 0x32:
+            frm = self.u16()
+            to = self.u16()
+            value = self.u8()
+            for i in range(frm, min(to + 1, len(self.bits))):
+                self.bits[i] = value & 1
+            self.events.append(("BITS_FILL", frm, to, value))
+            return False
+        if op == 0x37:
+            kind = self.val()
+            arg = self.val()
+            self.events.append(("SYSFUNC", kind, arg))
+            return False
+        if op == 0x45:
+            frm = self.u16()
+            to = self.u16()
+            value = self.val()
+            for i in range(frm, min(to + 1, MAX_VARS)):
+                self.vars[i] = value
+            self.events.append(("VARS_FILL", frm, to, value))
+            return False
+        if op == 0x48:
+            self.code = end
+            self.events.append(("SAVE_MENU",))
+            return False
+        if op == 0x4B:
+            arg = self.u16()
+            kind = self.u8()
+            self.events.append(("SYSCOND", kind, arg))
+            return False
+        if op == 0x80:
+            surf = self.u8()
+            name = self.take_str(end)
+            self.code = end
+            self.events.append(("UI_TEXT", surf, name))
+            return False
+        if op == 0x86:
+            self.events.append(("INPUT_RESET",))
+            return False
+        if op == 0x87:
+            self.events.append(("NOP87",))
+            return False
+        if op == 0x88:
+            idx = self.u8() & 0x3F
+            slots = [self.val() & 0x3F for _ in range(8)]
+            self.events.append(("COND_GROUP", idx, ",".join(str(v) for v in slots)))
+            return False
+        if op == 0x8F:
+            self.events.append(("COND_CLEAR",))
+            return False
+        if op == 0xA0:
+            self.events.append(("SAVE_MENU_DRAW",))
+            return False
+        if op == 0xA1:
+            v = bytes(self.u8() for _ in range(6))
+            self.events.append(("COLOR6", v.hex()))
+            return False
+        if op == 0xD6:
+            surf = self.u8()
+            flag = self.u8()
+            text = self.take_str(end)
+            self.code = end
+            self.events.append(("WIN_TEXT", surf, flag, text))
+            return False
+        if op == 0xE0:
+            idx = self.u8()
+            text = self.take_str(end)
+            self.code = end
+            self.events.append(("TEXT_OBJ", idx, text))
+            return False
+        if op == 0xE1:
+            idx = self.u8()
+            line = self.u8()
+            text = self.take_str(end)
+            self.code = end
+            self.events.append(("TEXT_OBJ_LINE", idx, line, text))
+            return False
+        if op in (0xE2, 0xE3):
+            idx = self.u8()
+            line = self.u8()
+            col = self.u8()
+            value = self.u16()
+            text = self.take_str(end)
+            self.code = end
+            self.events.append(("TEXT_OBJ_CELL", idx, line, col, value, text))
+            return False
+        if op == 0xE4:
+            v = bytes(self.plain[self.code:end])
+            self.code = end
+            self.events.append(("TEXT_OBJ_FULL", v.hex()))
+            return False
+        if op == 0xE5:
+            self.events.append(("TEXT_OBJ_FLAG", self.u8()))
+            return False
+        if op == 0xF1:
+            ms = self.val()
+            self.deadline = ms
+            self.events.append(("DEADLINE", ms))
+            return False
+        if op == 0xF2:
+            self.events.append(("NOP_F2",))
+            return False
+        if op == 0xF3:
+            x, y, w, h = self.val(), self.val(), self.val(), self.val()
+            name = self.take_str(end)
+            self.code = end
+            self.events.append(("MOVIE", x, y, w, h, name))
+            return False
+        if op == 0xF8:
+            surf = self.u8()
+            mask = self.u8()
+            self.events.append(("COLOR_CH", surf, mask))
+            return False
+        if op == 0xF9:
+            v = bytes(self.u8() for _ in range(5))
+            self.events.append(("COLOR5", v.hex()))
+            return False
+        if op == 0xFA:
+            self.events.append(("FUNC_FA", self.val()))
+            return False
+        if op == 0x7F:
+            self.events.append(("BUF_COPY",))
+            return False
+        if op == 0x60:
+            args = [self.val() for _ in range(5)]
+            name = self.take_str(end)
+            self.code = end
+            self.events.append(("EFFECT", ",".join(str(v) for v in args), name))
+            return False
+        if op == 0x63:
+            kind = self.u16()
+            a = self.u8()
+            b = self.u8()
+            dur = self.val()
+            self.events.append(("TRANS", kind, a, b, dur))
             return False
         if op == 0x15:
             # FUN_00436D80：选项文本 + 相对窗口基准的矩形

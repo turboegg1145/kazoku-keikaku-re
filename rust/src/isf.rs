@@ -259,6 +259,70 @@ pub enum Event {
     BgmVolume { looping: bool, volume: u32 },
     /// `0x72 <u32 音量>`：0 表示停掉 BGM。
     BgmLevel(u32),
+    /// `0x13`：19 字节参数块（全作只出现 1 次，用途未明）。
+    Raw13(Vec<u8>),
+    /// `0x20 <u8 面> <x> <y> <w> <h> <u8 标志>`：FUN_00414170（只用到前两个参数）。
+    SurfaceParam { surface: u8, a: i32, b: i32, c: i32, d: i32, flag: u8 },
+    /// `0x21 <u8 面> <u8 模式> <名字…>`：按名字装图（FUN_00437040，最多 4 个字符串）。
+    SurfaceImage { surface: u8, mode: u8, names: Vec<String> },
+    /// `0x23 <u8 序号> <a> <b> <u8 标志>`：FUN_00422230 / FUN_00422260。
+    ObjParam { index: u8, a: i32, b: i32, flag: u8 },
+    /// `0x25 <u8 面> <u8 标志> <文本>`：往画面上写文本（FUN_004141E0）。
+    SurfaceText { surface: u8, flag: u8, text: String },
+    /// `0x32 <u16 起> <u16 止> <u8 值>`：位数组区间填充（FUN_00423B40）。
+    BitsFill { from: u16, to: u16, value: u8 },
+    /// `0x37 <功能号> <参数>`：系统功能（FUN_004378F0 里 0..0x13 的大 switch）。
+    SysFunc { kind: i32, arg: i32 },
+    /// `0x45 <u16 起> <u16 止> <值>`：变量数组区间填充（FUN_00424A80）。
+    VarsFill { from: u16, to: u16, value: i32 },
+    /// `0x48`：存档/读档菜单（只出现在 START.ISF，FUN_00438A90）。
+    SaveMenu,
+    /// `0x4B <u16 参数> <u8 条件号>`：第二组系统条件（FUN_004392A0）。
+    SysCond { arg: u16, kind: u8 },
+    /// `0x80 <u8 面> <名字>`：UI 文本资源（FUN_00422A00）。
+    UiText { surface: u8, name: String },
+    /// `0x86`：把输入状态里的 1/2/13 号键清掉（FUN_00440850）。
+    InputReset,
+    /// `0x87`：空指令（原版处理函数直接 return）。
+    Nop87,
+    /// `0x88 <u8 组> <8 个位/变量号>`：登记条件组（64 组 × 9 字节，最后一字节是有效标志）。
+    CondGroup { index: u8, slots: [i32; 8] },
+    /// `0x8F`：把 64 个条件组的有效标志全清掉。
+    CondGroupClear,
+    /// `0xA0`：FUN_00414760（存档菜单相关）。
+    SaveMenuDraw,
+    /// `0xA1 <6 字节>`：FUN_00414770 配色。
+    Color6([u8; 6]),
+    /// `0xD6 <u8 面> <u8 标志> <文本>`：文字窗口写文本（FUN_00414590 / FUN_00414560）。
+    WindowText { surface: u8, flag: u8, text: String },
+    /// `0xE0 <u8 对象> <文本>`：新建/替换一个文本对象（最多 5 个）。
+    TextObjNew { index: u8, text: String },
+    /// `0xE1 <u8 对象> <u8 行> <文本>`：设某一行（FUN_00424ED0）。
+    TextObjLine { index: u8, line: u8, text: String },
+    /// `0xE2/0xE3 <u8 对象> <u8 行> <u8 列> <u16 值> <文本>`：设某个格子。
+    TextObjCell { index: u8, line: u8, col: u8, value: u16, text: String },
+    /// `0xE4`：整块设置（3 个字符串 + 8 个参数，全作只 1 处）。
+    TextObjFull(Vec<u8>),
+    /// `0xE5 <u8>`：FUN_0043F9A0。
+    TextObjFlag(u8),
+    /// `0xF3 <x> <y> <w> <h> <文件名>`：播 MPEG（FUN_0043D890）。
+    Movie { x: i32, y: i32, w: i32, h: i32, name: String },
+    /// `0xF1 <毫秒>`：设一个截止时间（vm+0x7B4 = timeGetTime() + n）。
+    Deadline(i32),
+    /// `0xF2`：空指令（原版处理函数直接 return 1）。
+    NopF2,
+    /// `0xFA <值>`：FUN_00434590。
+    FuncFa(i32),
+    /// `0x7F`：把 vm+0x7E0 的缓冲拷到 vm+0x8E4（lstrcpyA）。
+    BufCopy,
+    /// `0xF8 <u8 面> <u8 掩码>`：三个颜色通道的开关（FUN_004144D0）。
+    ColorChannels { surface: u8, mask: u8 },
+    /// `0xF9 <5 字节>`：FUN_004144A0。
+    Color5([u8; 5]),
+    /// `0x60 <5 个参数> <特效文件名>`：在画面上播特效（FUN_00414FA0，名字进 13 字节缓冲）。
+    Effect { args: [i32; 5], name: String },
+    /// `0x63 <u16 种类> <u8 a> <u8 b> <时长>`：画面转场/擦除（FUN_00413090）。
+    Transition { kind: u16, a: u8, b: u8, dur: i32 },
     /// `0x15 <u8 窗口> <u8 序号> <x> <y> <w> <h> <cp932 文本>`：登记一个选项。
     /// 目标函数 FUN_00418560 把文本拷进窗口对象的 32 项表（每项 0x20 字节）。
     Choice { window: u8, index: u8, x: i32, y: i32, w: i32, h: i32, text: String },
@@ -470,6 +534,8 @@ pub struct Vm {
     pub sys27: Vec<u8>,
     /// 存档块 28（全局变量数组的落盘副本）。
     pub sys28: Vec<u8>,
+    /// `0xF1` 设的等待时长（引擎 vm+0x7B4 存的是 timeGetTime()+n）。
+    pub deadline: i32,
 }
 
 impl Vm {
@@ -510,7 +576,24 @@ impl Vm {
             text_bg: Vec::new(),
             sys27: Vec::new(),
             sys28: Vec::new(),
+            deadline: 0,
         }
+    }
+
+    /// 从当前位置读一个 NUL 结尾的 cp932 串（对应引擎的 FUN_004349E0）。
+    fn take_str(&mut self, end: usize) -> String {
+        if self.code >= end {
+            return String::new();
+        }
+        let raw = &self.plain[self.code..end];
+        let n = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+        // 无效字节 encoding_rs 会解成 U+FFFD；这边直接丢掉，和 Python 的 errors="ignore" 对齐
+        let s: String = decode_cp932(&raw[..n])
+            .chars()
+            .filter(|&c| c != '\u{FFFD}' && !('\u{E000}'..='\u{F8FF}').contains(&c))
+            .collect();
+        self.code = (self.code + n + 1).min(end);
+        s
     }
 
     /// 把存档里的块 27/28 装进来（对应引擎打开 KIZUNAR.SAV 后读到的那两块）。
@@ -995,6 +1078,267 @@ impl Vm {
                 // FUN_0043AAF0：音量操作数，< 1 表示停
                 let level = self.val() as u32;
                 self.events.push(Event::BgmLevel(level));
+                Ok(false)
+            }
+            0x13 => {
+                // FUN_00436B40：19 个字节，用途未明
+                let mut v = Vec::with_capacity(19);
+                for _ in 0..19 {
+                    v.push(self.take_u8());
+                }
+                self.events.push(Event::Raw13(v));
+                Ok(false)
+            }
+            0x20 => {
+                // FUN_00436FD0 → FUN_00414170：<面> <x> <y> <w> <h> <标志>
+                let surface = self.take_u8();
+                let a = self.val();
+                let b = self.val();
+                let c = self.val();
+                let d = self.val();
+                let flag = self.take_u8();
+                self.events.push(Event::SurfaceParam { surface, a, b, c, d, flag });
+                Ok(false)
+            }
+            0x21 => {
+                // FUN_00437040：<面> <模式> + 最多 4 个 NUL 结尾的名字
+                let surface = self.take_u8();
+                let mode = self.take_u8();
+                let mut names = Vec::new();
+                while self.code < end {
+                    names.push(self.take_str(end));
+                }
+                self.events.push(Event::SurfaceImage { surface, mode, names });
+                Ok(false)
+            }
+            0x23 => {
+                // FUN_00437250：<序号> <a> <b> <标志>
+                let index = self.take_u8();
+                let a = self.val();
+                let b = self.val();
+                let flag = self.take_u8();
+                self.events.push(Event::ObjParam { index, a, b, flag });
+                Ok(false)
+            }
+            0x25 => {
+                // FUN_00437350 → FUN_004141E0：<面> <标志> <文本>
+                let surface = self.take_u8();
+                let flag = self.take_u8();
+                let text = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::SurfaceText { surface, flag, text });
+                Ok(false)
+            }
+            0x32 => {
+                // FUN_004376F0：<u16 起> <u16 止> <u8 值> → 位数组区间填充
+                let from = self.take_u16();
+                let to = self.take_u16();
+                let value = self.take_u8();
+                for i in from as usize..=to as usize {
+                    if i < self.bits.len() {
+                        self.bits[i] = value & 1;
+                    }
+                }
+                self.events.push(Event::BitsFill { from, to, value });
+                Ok(false)
+            }
+            0x37 => {
+                // FUN_004378F0：<功能号> <参数>，0..0x13 的大 switch
+                let kind = self.val();
+                let arg = self.val();
+                self.events.push(Event::SysFunc { kind, arg });
+                Ok(false)
+            }
+            0x45 => {
+                // FUN_004388A0：<u16 起> <u16 止> <值> → 变量数组区间填充
+                let from = self.take_u16();
+                let to = self.take_u16();
+                let value = self.val();
+                let end_i = (to as usize).min(self.vars.len().saturating_sub(1));
+                for i in from as usize..=end_i {
+                    self.vars[i] = value;
+                }
+                self.events.push(Event::VarsFill { from, to, value });
+                Ok(false)
+            }
+            0x48 => {
+                // FUN_00438A90：存档/读档菜单，只出现在 START.ISF
+                self.code = end;
+                self.events.push(Event::SaveMenu);
+                Ok(false)
+            }
+            0x4B => {
+                // FUN_004392A0：<u16 参数> <u8 条件号>，结果写进 0x47 的条件
+                let arg = self.take_u16();
+                let kind = self.take_u8();
+                self.events.push(Event::SysCond { arg, kind });
+                Ok(false)
+            }
+            0x80 => {
+                // FUN_0043B520 → FUN_00422A00：<面> <名字>
+                let surface = self.take_u8();
+                let name = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::UiText { surface, name });
+                Ok(false)
+            }
+            0x86 => {
+                // FUN_00440850：清 1/2/13 号键的输入状态
+                self.events.push(Event::InputReset);
+                Ok(false)
+            }
+            0x87 => {
+                // FUN_004434F0：原版就是空的
+                self.events.push(Event::Nop87);
+                Ok(false)
+            }
+            0x88 => {
+                // FUN_0043B8E0：<组号> <8 个 0..63 的位/变量号>
+                let index = self.take_u8() & 0x3F;
+                let mut slots = [0i32; 8];
+                for v in slots.iter_mut() {
+                    *v = self.val() & 0x3F;
+                }
+                self.events.push(Event::CondGroup { index, slots });
+                Ok(false)
+            }
+            0x8F => {
+                // FUN_0043BB90：清全部条件组的有效标志
+                self.events.push(Event::CondGroupClear);
+                Ok(false)
+            }
+            0xA0 => {
+                // FUN_0043BD10 → FUN_00414760
+                self.events.push(Event::SaveMenuDraw);
+                Ok(false)
+            }
+            0xA1 => {
+                // FUN_0043BD40 → FUN_00414770：6 个字节
+                let mut v = [0u8; 6];
+                for b in v.iter_mut() {
+                    *b = self.take_u8();
+                }
+                self.events.push(Event::Color6(v));
+                Ok(false)
+            }
+            0xD6 => {
+                // FUN_0043C9B0：<面> <标志> <文本>
+                let surface = self.take_u8();
+                let flag = self.take_u8();
+                let text = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::WindowText { surface, flag, text });
+                Ok(false)
+            }
+            0xE0 => {
+                // FUN_0043CAE0：<对象> <文本>
+                let index = self.take_u8();
+                let text = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::TextObjNew { index, text });
+                Ok(false)
+            }
+            0xE1 => {
+                // FUN_0043CBD0：<对象> <行> <文本>
+                let index = self.take_u8();
+                let line = self.take_u8();
+                let text = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::TextObjLine { index, line, text });
+                Ok(false)
+            }
+            0xE2 | 0xE3 => {
+                // FUN_0043CC90 / FUN_0043CE20：<对象> <行> <列> <u16 值> <文本>
+                let index = self.take_u8();
+                let line = self.take_u8();
+                let col = self.take_u8();
+                let value = self.take_u16();
+                let text = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::TextObjCell { index, line, col, value, text });
+                Ok(false)
+            }
+            0xE4 => {
+                // FUN_0043CF60：整块设置（3 个字符串 + 8 个参数）
+                let v = self.plain[self.code..end].to_vec();
+                self.code = end;
+                self.events.push(Event::TextObjFull(v));
+                Ok(false)
+            }
+            0xE5 => {
+                // FUN_0043D170 → FUN_0043F9A0
+                let v = self.take_u8();
+                self.events.push(Event::TextObjFlag(v));
+                Ok(false)
+            }
+            0xF1 => {
+                // FUN_0043D860：vm+0x7B4 = timeGetTime() + n
+                let ms = self.val();
+                self.deadline = ms;
+                self.events.push(Event::Deadline(ms));
+                Ok(false)
+            }
+            0xF2 => {
+                // FUN_0043DDE0：空指令
+                self.events.push(Event::NopF2);
+                Ok(false)
+            }
+            0xF3 => {
+                // FUN_0043D890：<x> <y> <w> <h> <文件名> → 播 MPEG
+                let x = self.val();
+                let y = self.val();
+                let w = self.val();
+                let h = self.val();
+                let name = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::Movie { x, y, w, h, name });
+                Ok(false)
+            }
+            0xF8 => {
+                // FUN_0043DB50：<面> <掩码> → 三个颜色通道
+                let surface = self.take_u8();
+                let mask = self.take_u8();
+                self.events.push(Event::ColorChannels { surface, mask });
+                Ok(false)
+            }
+            0xF9 => {
+                // FUN_0043DBE0：<面> <a> <b> <c> <d>
+                let mut v = [0u8; 5];
+                for b in v.iter_mut() {
+                    *b = self.take_u8();
+                }
+                self.events.push(Event::Color5(v));
+                Ok(false)
+            }
+            0xFA => {
+                // FUN_0043DC70 → FUN_00434590
+                let v = self.val();
+                self.events.push(Event::FuncFa(v));
+                Ok(false)
+            }
+            0x7F => {
+                // FUN_0043B4F0：lstrcpyA(vm+0x8E4, vm+0x7E0)
+                self.events.push(Event::BufCopy);
+                Ok(false)
+            }
+            0x60 => {
+                // FUN_0043A250：5 个操作数 + 特效文件名（进 13 字节缓冲）
+                let mut args = [0i32; 5];
+                for v in args.iter_mut() {
+                    *v = self.val();
+                }
+                let name = self.take_str(end);
+                self.code = end;
+                self.events.push(Event::Effect { args, name });
+                Ok(false)
+            }
+            0x63 => {
+                // FUN_0043A530：<u16 种类> <u8 a> <u8 b> <时长>；返回 0 才前进
+                let kind = self.take_u16();
+                let a = self.take_u8();
+                let b = self.take_u8();
+                let dur = self.val();
+                self.events.push(Event::Transition { kind, a, b, dur });
                 Ok(false)
             }
             0x15 => {

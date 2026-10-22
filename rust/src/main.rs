@@ -22,6 +22,10 @@ fn usage() -> ! {
     std::process::exit(2);
 }
 
+fn hexs(v: &[u8]) -> String {
+    v.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 fn flag(args: &[String], name: &str, default: u64) -> u64 {
     args.iter()
         .position(|a| a == name)
@@ -472,6 +476,77 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                     writeln!(f, "[BGM_VOL] {} {}", *looping as u8, volume)?
                 }
                 isf::Event::BgmLevel(v) => writeln!(f, "[BGM_LEVEL] {}", v)?,
+                isf::Event::Raw13(v) => writeln!(f, "[RAW13] {}", hexs(v))?,
+                isf::Event::SurfaceParam { surface, a, b, c, d, flag } => {
+                    writeln!(f, "[SURF_PARAM] surf={} {},{},{},{} flag={}", surface, a, b, c, d, flag)?
+                }
+                isf::Event::SurfaceImage { surface, mode, names } => {
+                    writeln!(f, "[SURF_IMG] surf={} mode={} names={}", surface, mode, names.join("|"))?
+                }
+                isf::Event::ObjParam { index, a, b, flag } => {
+                    writeln!(f, "[OBJ] idx={} {} {} flag={}", index, a, b, flag)?
+                }
+                isf::Event::SurfaceText { surface, flag, text } => {
+                    writeln!(f, "[SURF_TEXT] surf={} flag={} text={}", surface, flag, text)?
+                }
+                isf::Event::BitsFill { from, to, value } => {
+                    writeln!(f, "[BITS_FILL] {}..{} = {}", from, to, value)?
+                }
+                isf::Event::SysFunc { kind, arg } => {
+                    writeln!(f, "[SYSFUNC] kind={} arg={}", kind, arg)?
+                }
+                isf::Event::VarsFill { from, to, value } => {
+                    writeln!(f, "[VARS_FILL] {}..{} = {}", from, to, value)?
+                }
+                isf::Event::SaveMenu => writeln!(f, "[SAVE_MENU]")?,
+                isf::Event::SysCond { arg, kind } => {
+                    writeln!(f, "[SYSCOND] kind={} arg={}", kind, arg)?
+                }
+                isf::Event::UiText { surface, name } => {
+                    writeln!(f, "[UI_TEXT] surf={} name={}", surface, name)?
+                }
+                isf::Event::InputReset => writeln!(f, "[INPUT_RESET]")?,
+                isf::Event::Nop87 => writeln!(f, "[NOP87]")?,
+                isf::Event::CondGroup { index, slots } => {
+                    let list: Vec<String> = slots.iter().map(|v| v.to_string()).collect();
+                    writeln!(f, "[COND_GROUP] idx={} slots={}", index, list.join(","))?
+                }
+                isf::Event::CondGroupClear => writeln!(f, "[COND_CLEAR]")?,
+                isf::Event::SaveMenuDraw => writeln!(f, "[SAVE_MENU_DRAW]")?,
+                isf::Event::Color6(v) => writeln!(f, "[COLOR6] {}", hexs(v))?,
+                isf::Event::WindowText { surface, flag, text } => {
+                    writeln!(f, "[WIN_TEXT] surf={} flag={} text={}", surface, flag, text)?
+                }
+                isf::Event::TextObjNew { index, text } => {
+                    writeln!(f, "[TEXT_OBJ] idx={} text={}", index, text)?
+                }
+                isf::Event::TextObjLine { index, line, text } => {
+                    writeln!(f, "[TEXT_OBJ_LINE] idx={} line={} text={}", index, line, text)?
+                }
+                isf::Event::TextObjCell { index, line, col, value, text } => {
+                    writeln!(f, "[TEXT_OBJ_CELL] idx={} line={} col={} value={} text={}",
+                             index, line, col, value, text)?
+                }
+                isf::Event::TextObjFull(v) => writeln!(f, "[TEXT_OBJ_FULL] {}", hexs(v))?,
+                isf::Event::TextObjFlag(v) => writeln!(f, "[TEXT_OBJ_FLAG] {}", v)?,
+                isf::Event::Movie { x, y, w, h, name } => {
+                    writeln!(f, "[MOVIE] {},{} {}x{} {}", x, y, w, h, name)?
+                }
+                isf::Event::Deadline(ms) => writeln!(f, "[DEADLINE] {}", ms)?,
+                isf::Event::NopF2 => writeln!(f, "[NOP_F2]")?,
+                isf::Event::FuncFa(v) => writeln!(f, "[FUNC_FA] {}", v)?,
+                isf::Event::BufCopy => writeln!(f, "[BUF_COPY]")?,
+                isf::Event::ColorChannels { surface, mask } => {
+                    writeln!(f, "[COLOR_CH] surf={} mask={}", surface, mask)?
+                }
+                isf::Event::Color5(v) => writeln!(f, "[COLOR5] {}", hexs(v))?,
+                isf::Event::Effect { args, name } => {
+                    let list: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+                    writeln!(f, "[EFFECT] {} name={}", list.join(","), name)?
+                }
+                isf::Event::Transition { kind, a, b, dur } => {
+                    writeln!(f, "[TRANS] kind={} {}/{} dur={}", kind, a, b, dur)?
+                }
                 isf::Event::Choice { window, index, x, y, w, h, text } => {
                     writeln!(f, "[CHOICE] win={} idx={} rect={},{},{},{} text={}", window, index, x, y, w, h, text)?
                 }
