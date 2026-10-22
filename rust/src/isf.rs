@@ -396,6 +396,8 @@ pub enum Halt {
     StepLimit,
     /// 渲染用：已经拿到足够的台词，主动停下（省时间省内存）。
     TextLimit,
+    /// 渲染用：已经遇到第 N 个选项窗口，主动停下。
+    ChoiceLimit,
     ReturnOverflow,
     BadLength { at: usize, len: usize },
     OutOfRange { at: usize },
@@ -411,6 +413,7 @@ impl std::fmt::Display for Halt {
             Halt::ReturnUnderflow => write!(f, "return stack underflow"),
             Halt::StepLimit => write!(f, "step limit"),
             Halt::TextLimit => write!(f, "已经取够台词"),
+            Halt::ChoiceLimit => write!(f, "已经拿到选项窗口"),
             Halt::ReturnOverflow => write!(f, "return stack overflow"),
             Halt::BadLength { at, len } => write!(f, "bad length {} at {:#x}", len, at),
             Halt::OutOfRange { at } => write!(f, "code pointer {:#x} out of range", at),
@@ -592,6 +595,10 @@ pub struct Vm {
     pub stop_texts: Option<usize>,
     /// 已经产生的台词数。
     pub text_count: usize,
+    /// 遇到这么多选项窗口就停（渲染用）。
+    pub stop_choices: Option<usize>,
+    /// 已经产生的选项窗口数。
+    pub choice_count: usize,
     /// 0x37 维护的全局开关。
     pub sys: SysFlags,
 }
@@ -638,6 +645,8 @@ impl Vm {
             deadline: 0,
             stop_texts: None,
             text_count: 0,
+            stop_choices: None,
+            choice_count: 0,
             sys: SysFlags::new(),
         }
     }
@@ -1459,6 +1468,12 @@ impl Vm {
                 let count = self.val();
                 let flags = self.take_u8();
                 self.events.push(Event::ChoiceOpen { window, count, flags });
+                self.choice_count += 1;
+                if let Some(n) = self.stop_choices {
+                    if self.choice_count >= n {
+                        return Err(Halt::ChoiceLimit);
+                    }
+                }
                 Ok(false)
             }
             0x17 => {

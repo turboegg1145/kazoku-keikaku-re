@@ -263,6 +263,25 @@ impl Canvas {
     }
 
     /// 把 src 的 (sx,sy,w,h) 贴到 (dx,dy)，越界自动裁剪。
+    /// 填一块矩形（越界自动裁剪）。
+    pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, r: u8, g: u8, b: u8, a: u8) {
+        for yy in y..y + h {
+            if yy < 0 || yy as usize >= self.height {
+                continue;
+            }
+            for xx in x..x + w {
+                if xx < 0 || xx as usize >= self.width {
+                    continue;
+                }
+                let i = (yy as usize * self.width + xx as usize) * 4;
+                self.pixels[i] = r;
+                self.pixels[i + 1] = g;
+                self.pixels[i + 2] = b;
+                self.pixels[i + 3] = a;
+            }
+        }
+    }
+
     pub fn blit_rect(&mut self, src: &Canvas, sx: i32, sy: i32, w: i32, h: i32, dx: i32, dy: i32) {
         self.blit_rect_alpha(src, sx, sy, w, h, dx, dy, 255);
     }
@@ -333,6 +352,10 @@ impl Canvas {
         self.opaque = false;
     }
 
+    /// 量一段文字的宽度（像素），用于居中排版。
+    pub fn text_width(font: &fontdue::Font, text: &str, size: f32) -> f32 {
+        text.chars().map(|c| font.metrics(c, size).advance_width).sum()
+    }
     /// 复制一块矩形区域成新画布（用于把大画面按滚动偏移裁成 640×480）。
     pub fn crop(&self, sx: i32, sy: i32, w: usize, h: usize) -> Canvas {
         let mut cv = Canvas::new(w, h);
@@ -359,6 +382,33 @@ pub trait ImageSource {
     fn image(&self, name: &str) -> Option<Image>;
 }
 
+/// 一个选择窗口（引擎里 window 对象的 5 个槽之一）。
+#[derive(Clone, Default)]
+pub struct ChoiceWindow {
+    /// 0x20 设的屏幕位置（引擎 win+0x18/0x1c）。
+    pub x: i32,
+    pub y: i32,
+    /// 客户区原点（引擎 win+0x182c/0x1830，默认 0x10,0x10）。
+    pub base: (i32, i32),
+    /// 0x16 打开时的选项数；0 = 关着。
+    pub open: u8,
+    /// 0x16 的 flags：bit1 画文字、bit2 居中、bit3 右对齐。
+    pub flags: u8,
+    /// 窗口宽高（引擎 win+0x28/+0x2C）；默认 552x152，和消息窗口一致。
+    pub width: i32,
+    pub height: i32,
+    /// 0x15 登记的选项：(相对 x, y, w, h, 文本)。
+    pub items: Vec<(i32, i32, i32, i32, String)>,
+}
+
+impl ChoiceWindow {
+    /// 选项在**窗口内**的矩形：客户区原点 + 0x15 给的相对坐标。
+    /// 引擎 FUN_00418560 存的就是 base+param，FUN_00418990 直接拿它当窗口坐标用。
+    pub fn text_at(&self, i: usize) -> Option<(i32, i32, i32, i32, &str)> {
+        let it = self.items.get(i)?;
+        Some((self.base.0 + it.0, self.base.1 + it.1, it.2, it.3, &it.4))
+    }
+}
 /// 面合成器：把引擎的绘制指令流还原成 640×480 的画面。
 pub struct Player {
     /// 128 块面，0 号是默认显示面。
@@ -377,6 +427,8 @@ pub struct Player {
     pub window: Vec<Vec<String>>,
     /// 0x53/0x55 设的窗口底色。
     pub win_color: (u8, u8, u8),
+    /// 5 个选择窗口（引擎 window 对象的 5 个槽）。
+    pub choices: Vec<ChoiceWindow>,
     pub draws: u64,
 }
 
@@ -399,6 +451,14 @@ impl Player {
             cmds: Default::default(),
             window: vec![Vec::new(); 5],
             win_color: (0, 0, 0),
+            choices: (0..5)
+                .map(|_| ChoiceWindow {
+                    base: (0x10, 0x10),
+                    width: 552,
+                    height: 152,
+                    ..Default::default()
+                })
+                .collect(),
             draws: 0,
         }
     }
@@ -510,6 +570,40 @@ impl Player {
             Event::SurfaceImage { surface, names, .. } => {
                 let i = (*surface as usize).min(4);
                 self.window[i] = names.clone();
+                true
+            }
+            Event::Choice { window, index, x, y, w, h, text } => {
+                let wi = (*window as usize).min(4);
+                let idx = *index as usize;
+                let win = &mut self.choices[wi];
+                while win.items.len() <= idx {
+                    win.items.push((0, 0, 0, 0, String::new()));
+                }
+                win.items[idx] = (*x, *y, *w, *h, text.clone());
+                true
+            }
+            Event::ChoiceOpen { window, count, flags } => {
+                let wi = (*window as usize).min(4);
+                self.choices[wi].open = (*count).clamp(0, 32) as u8;
+                self.choices[wi].flags = *flags;
+                true
+            }
+            Event::ChoiceClose { window } => {
+                let wi = (*window as usize).min(4);
+                self.choices[wi].open = 0;
+                true
+            }
+            Event::ChoiceClear => {
+                for w in self.choices.iter_mut() {
+                    w.items.clear();
+                }
+                true
+            }
+            Event::SurfaceParam { surface, a, b, .. } => {
+                // 0x20 <窗口> <x> <y> …：移动窗口
+                let wi = (*surface as usize).min(4);
+                self.choices[wi].x = *a;
+                self.choices[wi].y = *b;
                 true
             }
             Event::WindowRect { r, g, b, .. } => {

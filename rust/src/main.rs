@@ -237,11 +237,21 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     let script = load_script(&exe_path, &arc_path, script_name)?;
     let mods = load_modules(&exe_path, &arc_path)?;
     let mut vm = isf::Vm::new(&script, steps).with_modules(mods, &stem_of(script_name));
-    // 只跑到第 lines 句台词就停：渲染用不着整本剧本，省一大截时间和内存
-    vm.stop_texts = Some(match only_at_hint(args) {
-        Some(n) => n + 1,
-        None => lines,
-    });
+    // 只跑到需要的那一句就停：渲染用不着整本剧本，省一大截时间和内存
+    let choice_at = args
+        .iter()
+        .position(|a| a == "--choice")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok());
+    match choice_at {
+        Some(n) => vm.stop_choices = Some(n + 1),
+        None => {
+            vm.stop_texts = Some(match only_at_hint(args) {
+                Some(n) => n + 1,
+                None => lines,
+            })
+        }
+    }
     let halt = vm.run()?;
     println!("{}: {}  steps={}", script_name, halt, vm.steps);
 
@@ -258,21 +268,54 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
         return Ok(());
     }
     let only_at = only_at_hint(args);
-    let pick: Vec<usize> = match only_at {
-        Some(n) => text_at.get(n).copied().into_iter().collect(),
-        None => text_at.iter().take(lines).copied().collect(),
+    let pick: Vec<usize> = if choice_at.is_some() {
+        Vec::new()
+    } else {
+        match only_at {
+            Some(n) => text_at.get(n).copied().into_iter().collect(),
+            None => text_at.iter().take(lines).copied().collect(),
+        }
     };
     std::fs::create_dir_all(outdir)?;
 
+    // --choice N：在第 N 个选项窗口刚打开时截一张（画面 + 选项文字）
+    let shot_at = choice_at.map(|_| {
+        vm.events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, isf::Event::ChoiceOpen { .. }))
+            .map(|(i, _)| i)
+            .last()
+            .unwrap_or(usize::MAX)
+    });
     let mut player = Player::new();
     let mut written = 0usize;
     for (i, ev) in vm.events.iter().enumerate() {
+        if Some(i) == shot_at {
+            player.apply(ev, &assets);
+            let mut cv = player.frame();
+            let org = frame_origin(&cv, frame.as_ref());
+            if let Some(f) = frame.as_ref() {
+                cv.blit(f, org.0 as isize, org.1 as isize);
+            }
+            draw_choices(&mut cv, &font, &player, size, org);
+            if args.iter().any(|a| a == "--ascii") {
+                println!("{}", cv.ascii(78, 26));
+            }
+            let path = format!("{}/{:03}.png", outdir, written);
+            cv.write_png(&path)?;
+            println!("  选项窗口 -> {}", path);
+            written += 1;
+            continue;
+        }
         if let isf::Event::Text { speaker, text, .. } = ev {
             if !pick.contains(&i) {
                 continue;
             }
             let mut cv = player.frame();
             draw_message(&mut cv, &font, frame.as_ref(), *speaker, text, size);
+            let org = frame_origin(&cv, frame.as_ref());
+            draw_choices(&mut cv, &font, &player, size, org);
             if args.iter().any(|a| a == "--ascii") {
                 println!("{}", cv.ascii(78, 26));
             }
@@ -330,6 +373,60 @@ const INSET_Y: f32 = 18.0;
 /// 行高 = 24px 字号 × 1.25。四行正好 120，加两倍 16 的上下边 = 152。
 const LINE_H: f32 = 30.0;
 
+/// 把当前打开的选择窗口画到画面上（文字直接贴，没有底色——引擎里窗口面是透明的）。
+/// 选项窗口的绘制。位置规则照抄 FUN_00418990：
+///   默认      → 左上角 = 矩形左上角
+///   flags&4   → x=(right-tw/2+left)/2, y=(bottom-fh+top)/2（引擎原式，含它那个 tw/4 偏移）
+///   flags&8   → 右对齐到窗口宽-0x1e
+fn draw_choices(
+    cv: &mut Canvas,
+    font: &fontdue::Font,
+    p: &kzn::render::Player,
+    size: f32,
+    origin: (i32, i32),
+) {
+    const CELL: i32 = 16; // 引擎 +0x38：选项字体高/宽（等宽 16px）
+    for w in p.choices.iter() {
+        if w.open == 0 {
+            continue;
+        }
+        // 子窗口 surface 没有 alpha 通道：FUN_004082D0(surf,0,0,0) 会把 0 色二次填成白色，
+        // 所以开窗时是一整块白底（同尺寸、同位置盖住消息窗口）。
+        cv.fill_rect(origin.0, origin.1, w.width, w.height, 255, 255, 255, 255);
+        for i in 0..w.open as usize {
+            let Some((left, top, rw, rh, text)) = w.text_at(i) else { continue };
+            let n = text.chars().count() as i32;
+            let tw = n * CELL;
+            let right = left + rw;
+            let bottom = top + rh;
+            let (tx, ty) = if w.flags & 4 != 0 {
+                ((right - tw / 2 + left) / 2, (bottom - CELL + top) / 2)
+            } else if w.flags & 8 != 0 {
+                (w.width - 0x1e - tw, top)
+            } else {
+                (left, top)
+            };
+            // 1px 50% 黑投影，再画正文（引擎 FUN_004092A0 的 param_8 分支）
+            cv.draw_text(
+                font,
+                text,
+                (origin.0 + tx + 1) as isize,
+                (origin.1 + ty + 1) as isize,
+                size,
+                (128, 128, 128),
+            );
+            cv.draw_text(
+                font,
+                text,
+                (origin.0 + tx) as isize,
+                (origin.1 + ty) as isize,
+                size,
+                (0, 0, 0),
+            );
+        }
+    }
+}
+
 fn only_at_hint(args: &[String]) -> Option<usize> {
     args.iter()
         .position(|a| a == "--at")
@@ -339,6 +436,15 @@ fn only_at_hint(args: &[String]) -> Option<usize> {
 
 fn frame_width(frame: Option<&ggd::Image>) -> f32 {
     frame.map(|f| f.width as f32).unwrap_or(552.0)
+}
+
+/// 消息窗口（FWIN2.GG2，552x152）在屏幕上的左上角。
+fn frame_origin(cv: &Canvas, frame: Option<&ggd::Image>) -> (i32, i32) {
+    let (fw, fh) = match frame {
+        Some(f) => (f.width as i32, f.height as i32),
+        None => (552, 152),
+    };
+    ((cv.width as i32 - fw) / 2, cv.height as i32 - fh - 8)
 }
 
 /// 把窗框（FWIN2.GG2，60% 黑圆角框）和台词贴到画面上。
