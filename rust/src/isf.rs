@@ -216,6 +216,14 @@ pub trait Host {
 
     /// `0xFB`：计时器清零。
     fn reset_timer(&mut self) {}
+
+    /// `0xA5`：取存档块 29 的 RLE 数据（已读文本位图）。没有存档就返回 None。
+    fn load_seen(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// `0xA6`：文字窗口参数。
+    fn set_text_rect(&mut self, _a: u8, _b: u16, _c: u16) {}
 }
 
 /// 无人值守宿主：不点任何东西，计时器每问一次走 16ms（相当于 60fps 一帧）。
@@ -375,6 +383,13 @@ pub struct Vm {
     rng: u32,
     /// 位数组（引擎 vm+0x554）：0x31 写、0x33/0x3B 读。
     pub bits: Vec<u8>,
+    /// 位数组的有效位数（引擎 `0x30 <u16 n>` 设成 n+1；构造时 1024）。
+    pub bits_n: usize,
+    /// 变量数组的有效个数（引擎 `0x40 <u16 n>` 设成 n+1；构造时 256）。
+    pub vars_n: usize,
+    /// 已读文本位图（引擎 vm+0x564）：`0xA5 <u32 n>` 设成 n+1 并从存档块 29 载入。
+    pub seen: Vec<u8>,
+    pub seen_n: usize,
     /// `0x02 CALLMOD` 能调用的其他模块（名字 -> 已解密脚本）。
     pub modules: std::collections::HashMap<String, std::rc::Rc<Script>>,
     /// 当前模块名。
@@ -418,6 +433,10 @@ impl Vm {
             voice: None,
             rng: 0x1234_5678,
             bits: vec![0; 0x10000],
+            bits_n: 1024,
+            vars_n: 256,
+            seen: vec![0; 0x10000],
+            seen_n: 1024,
             modules: Default::default(),
             module: String::new(),
             mod_stack: Vec::new(),
@@ -655,6 +674,40 @@ impl Vm {
                 self.events.push(Event::Text { speaker: spk, text: txt, voice: self.voice.take() });
                 Ok(false)
             }
+            0x30 => {
+                // FUN_00437660：声明位数组尺寸 = 操作数 + 1
+                let n = self.take_u16() as usize + 1;
+                self.bits_n = n;
+                Ok(false)
+            }
+            0x40 => {
+                // FUN_004386a0：声明变量数组尺寸 = 操作数 + 1
+                let n = self.take_u16() as usize + 1;
+                self.vars_n = n;
+                Ok(false)
+            }
+            0xA5 => {
+                // FUN_0043bf90：声明已读文本位图尺寸，并从 KIZUNAR.SAV 的块 29 载入。
+                // 存档不存在不算错（引擎里 FUN_0043e1d0 直接返回 1）。
+                let n = crate::u32le(&self.plain, self.code) as usize + 1;
+                self.code += 4;
+                self.seen_n = n;
+                if let Some(raw) = self.host.load_seen() {
+                    let packed = crate::sav::rle_decode(&raw, n);
+                    for i in 0..n.min(self.seen.len()) {
+                        self.seen[i] = (packed[i >> 3] >> (i & 7)) & 1;
+                    }
+                }
+                Ok(false)
+            }
+            0xA6 => {
+                // FUN_0043c000：文字窗口参数 <u8> <u16> <u16>
+                let a = self.take_u8();
+                let b = self.take_u16();
+                let c = self.take_u16();
+                self.host.set_text_rect(a, b, c);
+                Ok(false)
+            }
             0x84 => {
                 // FUN_0043B6F0：定义绘制槽（64 项，engine+0xE0）
                 // 84 <u8 slot> <u32 x> <u32 y> <u32 w> <u32 h> <u8 layer> <u16 img> <u8> <u8> <u8>
@@ -842,6 +895,36 @@ impl Vm {
                 Ok(false)
             }
         }
+    }
+
+    /// 把位数组打包成存档里的字节串（`ceil(bits_n/8)` 字节，LSB 优先）。
+    pub fn pack_bits(&self) -> Vec<u8> {
+        let mut out = vec![0u8; (self.bits_n + 7) / 8];
+        for i in 0..self.bits_n.min(self.bits.len()) {
+            if self.bits[i] != 0 {
+                out[i >> 3] |= 1 << (i & 7);
+            }
+        }
+        out
+    }
+
+    /// 从存档格恢复位数组与变量数组（尺寸以格里的长度为准）。
+    pub fn apply_slot(&mut self, slot: &crate::sav::Slot) {
+        self.bits_n = slot.bits.len() * 8;
+        for i in 0..self.bits_n.min(self.bits.len()) {
+            self.bits[i] = (slot.bits[i >> 3] >> (i & 7)) & 1;
+        }
+        self.vars_n = slot.vars.len();
+        for (i, &v) in slot.vars.iter().enumerate().take(self.vars.len()) {
+            self.vars[i] = v;
+        }
+    }
+
+    /// 把当前位数组与变量数组写进一个存档格。
+    pub fn fill_slot(&self, slot: &mut crate::sav::Slot) {
+        slot.bits = self.pack_bits();
+        slot.vars = self.vars.iter().take(self.vars_n).copied().collect();
+        slot.vars.resize(crate::sav::VARS_N, 0);
     }
 
     /// `0x3A`：系统条件（FUN_004383D0，跳转表 0x438658，共 16 个系统号）。

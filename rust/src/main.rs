@@ -7,7 +7,7 @@
 //! kzn dump  <KIZUNAR.EXE> <ISF归档> <输出目录> [--steps N]
 //! ```
 
-use kzn::{ggd, isf, sm2mpx};
+use kzn::{ggd, isf, sav, sm2mpx};
 use std::io::Write;
 
 fn usage() -> ! {
@@ -18,6 +18,7 @@ fn usage() -> ! {
     eprintln!("  kzn png   <归档> <成员名> <out.png>");
     eprintln!("  kzn run   <KIZUNAR.EXE> <ISF归档> <脚本名> [--steps N]");
     eprintln!("  kzn dump  <KIZUNAR.EXE> <ISF归档> <输出目录> [--steps N]");
+    eprintln!("  kzn sav   <KIZUNAR.SAV> [--roundtrip]");
     std::process::exit(2);
 }
 
@@ -27,6 +28,40 @@ fn flag(args: &[String], name: &str, default: u64) -> u64 {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+
+fn cmd_sav(args: &[String]) -> kzn::Result<()> {
+    if args.is_empty() {
+        usage();
+    }
+    let data = std::fs::read(&args[0])?;
+    let sf = sav::parse(&data)?;
+    println!("文件 {} 字节，块表 {} 项", data.len(), sav::TABLE_N);
+    for (i, s) in sf.slots.iter().enumerate() {
+        if !s.used() {
+            continue;
+        }
+        let t = &s.time;
+        let vars_used = s.vars.iter().filter(|&&v| v != 0).count();
+        println!(
+            "格 {:2}  {:04}-{:02}-{:02} {:02}:{:02}:{:02}  {:<24}  变量非零 {}",
+            i, t[0], t[1], t[3], t[4], t[5], t[6], s.title, vars_used
+        );
+    }
+    println!("最新存档：{:?}", sf.newest());
+    println!("保留块 27：{} 字节，块 28：{} 字节", sf.system_block(27).len(), sf.system_block(28).len());
+    println!("已读文本位图：{} 字节 RLE（{} 位）", sf.global_bits.len(), sav::GLOBAL_BITS_N);
+    if args.iter().any(|a| a == "--roundtrip") {
+        let again = sav::build(&sf);
+        if again == data {
+            println!("回环：逐字节一致");
+        } else {
+            println!("回环：不一致（{} != {} 字节）", again.len(), data.len());
+            std::process::exit(1);
+        }
+    }
+    Ok(())
 }
 
 fn main() {
@@ -42,6 +77,7 @@ fn main() {
         "shot" => cmd_shot(&args[1..]),
         "run" => cmd_run(&args[1..]),
         "dump" => cmd_dump(&args[1..]),
+        "sav" => cmd_sav(&args[1..]),
         _ => usage(),
     };
     if let Err(e) = rc {

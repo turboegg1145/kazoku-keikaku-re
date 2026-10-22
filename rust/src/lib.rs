@@ -9,6 +9,7 @@
 pub mod ggd;
 pub mod render;
 pub mod isf;
+pub mod sav;
 pub mod sm2mpx;
 
 /// 一个错误类型就够了：这些解析器要么成功，要么带上一条人话说明。

@@ -20,7 +20,7 @@
 | OGG / MPEG-1 | ✅ 标准格式 |
 | GGD 图像（50 个成员，24bpp） | ✅ **完全解开**，操作码表从 `FUN_0040b190` 抄出 |
 | GG0 / GG2 图像（792 个成员，32bpp BGRA） | ✅ **完全解开**，操作码表从 `FUN_0040b8e0` 抄出 |
-| 存档 SAV | ⚠️ 未解析（重写版可自定格式）|
+| **存档 SAV（`KIZUNAR.SAV`）** | ✅ **完全解析**：30 项块表 + 27 格 + 位图 RLE，真实存档逐字节回环通过（`docs/06-save.md`）|
 
 ## 文档
 
@@ -28,6 +28,8 @@
 - [文件格式](docs/02-formats.md)
 - [ISF 虚拟机](docs/04-isf-vm.md)
 - [移植评估（Rust + iOS）](docs/03-porting.md)
+- [指令全表与还原进度](docs/05-opcodes-todo.md)
+- [存档格式](docs/06-save.md)
 - [负结果与踩坑记录](notes/negative-results.md)
 
 ## 工具
@@ -36,6 +38,8 @@
 - `tools/ggd.py` — GGD / GG0 / GG2 图像解码 / 编码 / 出 PNG（库 + 命令行）
 - `tools/ggd_batch.py` — 批量把归档里的图导出成 PNG
 - `tools/test_ggd.py` — 不依赖游戏数据的自检（6 项，全部通过）
+- `tools/sav.py` — `KIZUNAR.SAV` 解析 / 构造 / 位图 RLE（`--selftest` 对真实存档做逐字节回环）
+- `tools/test_sav.py` — 存档格式自检（全部通过）
 - `tools/isf_crypto.py` — ISF 两层解密 + 指令流切分（库）
 - `tools/isf_text.py` — 导出全部剧本正文（需原版 EXE 提供密钥表）
 - `tools/isf_dis.py` — ISF 反汇编（带 opcode 助记符）
@@ -53,6 +57,8 @@ python3 tools/test_ggd.py
 python3 tools/isf_vm.py KIZUNAR.EXE ISF SNR00.ISF --out snr00.txt
 python3 tools/isf_dump.py KIZUNAR.EXE ISF out/script --steps 300000
 python3 tools/isf_text.py KIZUNAR.EXE ISF out/
+python3 tools/sav.py KIZUNAR.SAV
+python3 tools/test_sav.py
 ```
 
 > 本仓库只保存分析脚本与笔记，不包含游戏数据。

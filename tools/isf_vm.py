@@ -95,6 +95,10 @@ class VM:
         self.auto = True
         # 位数组（引擎 vm+0x554）：0x31 写、0x33/0x3B 读。存「读过/解锁」这类旗标。
         self.bits = bytearray(0x10000)
+        self.bits_n = 1024        # 0x30 <u16 n> -> n+1
+        self.vars_n = 256         # 0x40 <u16 n> -> n+1
+        self.seen = bytearray(0x10000)   # 0xA5：已读文本位图
+        self.seen_n = 1024
         # 输入状态字节（引擎 vm+0x549/0x54A/0x54C/0x54D/0x54E），0x3A 会读它们。
         self.b549 = self.b54a = self.b54c = self.b54d = self.b54e = 0
 
@@ -317,6 +321,27 @@ class VM:
                     return False
                 if act == 0xFF:
                     return False
+        if op == 0x30:
+            # FUN_00437660：声明位数组尺寸 = 操作数 + 1
+            self.bits_n = self.u16() + 1
+            return False
+
+        if op == 0x40:
+            # FUN_004386a0：声明变量数组尺寸 = 操作数 + 1
+            self.vars_n = self.u16() + 1
+            return False
+
+        if op == 0xA5:
+            # FUN_0043bf90：声明已读文本位图尺寸（存档块 29 的长度）
+            n = self.u32raw() + 1
+            self.seen_n = n
+            return False
+
+        if op == 0xA6:
+            # FUN_0043c000：文字窗口参数 <u8> <u16> <u16>
+            self.u8(); self.u16(); self.u16()
+            return False
+
         if op == 0x31:
             # FUN_00423ac0：位数组第 bit 位，mode 0 清 / 1 置 / 2 翻转
             bit = self.u16()
