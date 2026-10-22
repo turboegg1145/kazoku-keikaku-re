@@ -164,6 +164,10 @@ class VM:
             return self.poll_input(mode, flags)
         return (-1, 0)
 
+    def reset_timer(self):
+        """0xFB：宿主也应把计时器清零。"""
+        self.clock = 0
+
     def sys_test(self, sid, arg):
         """0x3A：按引擎系统状态跳转（FUN_004383d0）。未模拟的状态一律返回 False。"""
         g = self.sys
@@ -298,6 +302,7 @@ class VM:
         if op == 0xFB:
             # FUN_004345c0：把计时器清零（引擎 +0x184 = 0）
             self.clock = 0
+            self.reset_timer()
             return False
         if op == 0xFC:
             # FUN_0043dcb0：vars[u16] = FUN_004345d0() = timeGetTime() 累计毫秒
@@ -316,11 +321,12 @@ class VM:
             payload = self.plain[self.code:end]
             spk, txt = decode_text(payload)
             self.texts.append((spk, txt, self.voice))
-            self.events.append(("TEXT", spk, txt[:24], self.voice))
+            self.events.append(("TEXT", spk, txt, self.voice))
             self.voice = None
             return False
         if op == 0x78:
             self.voice = ascii_of(self.plain[self.code:end])
+            self.events.append(("VOICE", self.voice))
             return False
         if op == 0xF4:
             self.flags[0x7FD] = self.u8() != 0
@@ -331,7 +337,12 @@ class VM:
             if v == 1:
                 self.flags[0x83C] = True
             return False
-        if op in (0x02, 0x56, 0xF0):
+        if op == 0x56:
+            idx = struct.unpack_from("<I", self.plain, self.code)[0]
+            name = ascii_of(self.plain[self.code + 4:end])
+            self.events.append(("IMAGE", idx, name))
+            return False
+        if op in (0x02, 0xF0):
             s = ascii_of(self.plain[self.code:end])
             self.events.append((NAMES[op], s))
             return False
@@ -382,7 +393,10 @@ def main(argv):
                 f.write(tag + who + txt.replace(chr(10), "\\n") + chr(10))
         print("wrote %s (%d lines)" % (out, len(vm.texts)))
     for e in vm.events[:15]:
-        print("   ", e)
+        if e[0] == "TEXT":
+            print("    (TEXT, %r, %r, %r)" % (e[1], e[2][:40], e[3]))
+        else:
+            print("   ", e)
     return 0
 
 

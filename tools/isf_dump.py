@@ -63,7 +63,7 @@ def main(argv):
                     tag = voice or "-"
                     f.write("[TEXT] %-3s %-10s %s\n" % (who, tag, txt.replace("\n", "\\n")))
                 else:
-                    f.write("[%s] %s\n" % (kind, rest[0]))
+                    f.write("[%s] %s\n" % (kind, " ".join(str(x) for x in rest)))
         print("%-14s %-38s steps=%-8d texts=%-5d -> %s"
               % (name, halt, vm.steps, len(vm.texts), os.path.basename(path)))
 

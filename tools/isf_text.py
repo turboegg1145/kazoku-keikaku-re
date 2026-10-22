@@ -24,6 +24,19 @@ VOICE_OP = 0x78
 VOICE_ARCHIVE_OP = 0xF0
 
 
+def _drop_junk(s):
+    """去掉解码后残留的垃圾字符。
+
+    cp932 里 0x80 / 0xA0 / 0xFD..0xFF 这些「未定义单字节」在 Python 里会变成
+    私用区 U+F8F0..U+F8F3，在 Rust 的 encoding_rs 里会变成 U+FFFD；两者都当填充丢掉。
+    注意必须在**解码之后**按字符过滤：这些字节也可能是合法双字节的续字节（如 あ = 82 A0）。
+    """
+    return "".join(
+        c for c in s
+        if not (ord(c) < 0x20 or ord(c) == 0x7F or 0xE000 <= ord(c) <= 0xF8FF or ord(c) == 0xFFFD)
+    )
+
+
 def clean(raw):
     """把 ISF 文本里的控制码翻译成可读字符串（整段按 cp932 解码）。"""
     parts = []
@@ -34,18 +47,18 @@ def clean(raw):
         if b == 0x00:
             nxt = raw[i + 1] if i + 1 < len(raw) else 0
             if nxt == 0x06:          # 句中换行
-                parts.append(buf.decode("cp932", "replace"))
+                parts.append(_drop_junk(buf.decode("cp932", "replace")))
                 buf.clear()
                 parts.append("\n")
                 i += 2
                 continue
             break                    # 其余 0x00 视为结束/填充
-        if b < 0x20:                 # 其余控制码（0x02 等）直接丢弃
+        if b < 0x20:                 # 控制码（0x02 等）直接丢弃；cp932 的续字节不会落在这个区间
             i += 1
             continue
         buf.append(b)
         i += 1
-    parts.append(buf.decode("cp932", "replace"))
+    parts.append(_drop_junk(buf.decode("cp932", "replace")))
     return "".join(parts)
 
 
