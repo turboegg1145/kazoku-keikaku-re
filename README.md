@@ -26,6 +26,9 @@
 
 ## 文档
 
+**先看 [交接说明](docs/10-handover.md)** —— 现状、下一步、坑，一页看完。
+
+- [交接说明](docs/10-handover.md)
 - [引擎与运行时](docs/01-engine.md)
 - [文件格式](docs/02-formats.md)
 - [ISF 虚拟机](docs/04-isf-vm.md)
@@ -33,6 +36,8 @@
 - [指令全表与还原进度](docs/05-opcodes-todo.md)
 - [存档格式](docs/06-save.md)
 - [音频](docs/07-audio.md)
+- [系统功能 0x37](docs/08-sysfunc.md)
+- [选项窗口](docs/09-choice.md)
 - [负结果与踩坑记录](notes/negative-results.md)
 
 ## 工具

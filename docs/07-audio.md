@@ -58,3 +58,34 @@
 2. 音频后端按事件驱动：`BGM` 切歌（同名不重播）、`BGM_VOL` 调音量、`BGM_LEVEL 0` 停；
 3. 语音跟台词同步：台词开始打字时播，跳过/自动时切断；
 4. OGG 直接交给平台解码器，不需要自己写解码。
+
+## 4. 混音器（`rust/src/audio.rs`）
+
+引擎音频只有四类：BGM（单路、可循环、切换有淡入淡出）、语音（单路，新打断旧）、
+SE（多路叠加）、主音量。`Mixer` 按这个模型实现：
+
+```
+bgm      当前 BGM
+bgm_old  正在淡出的旧 BGM（切歌交叉淡化）
+voice    当前语音
+se       Vec<Voice>，播完自动回收
+render(frames, out_rate, chans) -> Vec<i16>   // 拉模式
+```
+
+拉模式是为了 iOS：CoreAudio 的 render callback 直接调 `render`，核心不含任何平台代码。
+
+重采样用线性插值（源 22050/44100，输出通常 48000，不插值会有明显锯齿）。
+
+解码用 `lewton`（纯 Rust Ogg Vorbis），`decode_ogg(bytes) -> Track`。
+
+验证：
+
+```
+kzn audio <归档> <成员> [--wav out.wav]
+```
+
+```
+02.OGG: 324.61 秒  44100 Hz  2 声道  峰值 32768
+SE001.OGG: 21.97 秒  22050 Hz  1 声道  峰值 2960
+ANA0001.OGG: 5.02 秒  22050 Hz  1 声道  峰值 7431
+```
