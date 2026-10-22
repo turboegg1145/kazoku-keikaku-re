@@ -12,7 +12,8 @@
 | 模块 | 状态 |
 |---|---|
 | SM2MPX10 归档 | ✅ 全部解析（842 个成员） |
-| ISF 脚本（两层解密 + 指令流） | ✅ 通，163 个 opcode 的处理函数全部定位 |
+| ISF 脚本（两层解密 + 指令流） | ✅ 通，163 个 opcode 全部定位 |
+| **ISF 虚拟机（可执行）** | ✅ **41 个脚本全部跑到自然结束**，导出 60,917 条台词 |
 | 台词文本导出 | ✅ 62,298 条 |
 | OGG / MPEG-1 | ✅ 标准格式 |
 | GGD 图像（50 个成员，24bpp） | ✅ **完全解开**，操作码表从 `FUN_0040b190` 抄出 |
@@ -36,6 +37,7 @@
 - `tools/isf_crypto.py` — ISF 两层解密 + 指令流切分（库）
 - `tools/isf_text.py` — 导出全部剧本正文（需原版 EXE 提供密钥表）
 - `tools/isf_dis.py` — ISF 反汇编（带 opcode 助记符）
+- `tools/isf_vm.py` — **可执行的 ISF 虚拟机**（Python 参考实现，能跑完整剧本）
 
 用法示例：
 
@@ -44,6 +46,7 @@ python3 tools/sm2mpx.py list GGD
 python3 tools/ggd.py GGD CG2_BAO out.png
 python3 tools/ggd_batch.py GGD out/
 python3 tools/test_ggd.py
+python3 tools/isf_vm.py KIZUNAR.EXE ISF SNR00.ISF --out snr00.txt
 python3 tools/isf_text.py KIZUNAR.EXE ISF out/
 ```
 
