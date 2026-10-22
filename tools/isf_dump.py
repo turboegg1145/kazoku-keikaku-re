@@ -18,12 +18,16 @@ import isf_vm
 MENU = {"TITLE.ISF", "BGMMODE.ISF", "CGMODE.ISF", "SEXMODE.ISF"}
 
 
-def dump_one(name, blob, secret, steps, modules=None):
+def dump_one(name, blob, secret, steps, modules=None, save=None):
     plain, head_len, _ = decrypt_isf(blob, secret)
     n = (head_len - 8) // 4
     labels = list(struct.unpack_from("<%dI" % n, plain, 8)) if n > 0 else []
     vm = isf_vm.VM(plain, head_len, labels, steps=steps, modules=modules,
                    name=name.rsplit(".", 1)[0].upper())
+    if save is not None:
+        # 真机存档里的块 27/28 是全局位数组/变量数组的落盘副本，0x4A 要读它们。
+        vm.sys27 = bytearray(save.system.get(27, b""))
+        vm.sys28 = bytearray(save.system.get(28, b""))
     try:
         vm.run()
         halt = "ok"
@@ -51,11 +55,21 @@ def main(argv):
     only = argv[4].upper() if len(argv) > 4 and not argv[4].startswith("--") else None
     if only:
         names = [n for n in names if n.upper().startswith(only)]
+    # 真机存档：给 0x4A 提供块 27/28。默认取 EXE 同目录的 KIZUNAR.SAV。
+    save = None
+    sav_path = (argv[argv.index("--sav") + 1] if "--sav" in argv
+                else os.path.join(os.path.dirname(os.path.abspath(argv[1])), "KIZUNAR.SAV"))
+    if os.path.exists(sav_path):
+        try:
+            import sav as savmod
+            save = savmod.parse(open(sav_path, "rb").read())
+        except Exception:                        # noqa: BLE001 - 存档坏了就当没有
+            save = None
     total_text = 0
     total_step = 0
     rows = []
     for name in names:
-        vm, halt = dump_one(name, arc[name], secret, steps, modules)
+        vm, halt = dump_one(name, arc[name], secret, steps, modules, save)
         total_text += len(vm.texts)
         total_step += vm.steps
         rows.append((name, halt, vm.steps, len(vm.texts)))
@@ -67,6 +81,24 @@ def main(argv):
                     who = "S%d" % spk if spk is not None else "-"
                     tag = voice or "-"
                     f.write("[TEXT] %-3s %-10s %s\n" % (who, tag, txt.replace("\n", "\\n")))
+                elif kind in ("GSAVE", "GLOAD"):
+                    which, start, count, x = rest
+                    tag = "GSAVE" if kind == "GSAVE" else "GLOAD"
+                    f.write("[%s] which=%d start=%d count=%d x=%d\n"
+                            % (tag, which, start, count, x))
+                elif kind == "SURF":
+                    idx, w, h = rest
+                    f.write("[SURF] idx=%d %dx%d\n" % (idx, w, h))
+                elif kind == "SURF_POS":
+                    idx, x, y = rest
+                    f.write("[SURF_POS] idx=%d %d,%d\n" % (idx, x, y))
+                elif kind == "WIN_COLOR":
+                    surf, r, g, b = rest
+                    f.write("[WIN_COLOR] surf=%d rgb=%02x%02x%02x\n" % (surf, r, g, b))
+                elif kind == "WIN_FX":
+                    value, r, g, b, flag = rest
+                    f.write("[WIN_FX] value=%d rgb=%02x%02x%02x flag=%d\n"
+                            % (value, r, g, b, flag))
                 elif kind == "DRAW":
                     cmd, img, x, y, w, h, dur, dx, dy, extra = rest
                     line = ("[DRAW] cmd=%d img=%d src=%d,%d,%d,%d dur=%d dst=%d,%d"

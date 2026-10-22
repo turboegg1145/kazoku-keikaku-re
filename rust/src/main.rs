@@ -406,6 +406,14 @@ fn cmd_run(args: &[String]) -> kzn::Result<()> {
     Ok(())
 }
 
+/// 读 EXE 同目录的 KIZUNAR.SAV（真机上的存档），给虚拟机提供块 27/28。
+/// 没有存档或解析失败就返回 None —— 对应引擎里「读存档失败」但继续跑的情况。
+fn save_beside(exe: &str) -> Option<sav::SaveFile> {
+    let dir = std::path::Path::new(exe).parent()?;
+    let data = std::fs::read(dir.join("KIZUNAR.SAV")).ok()?;
+    sav::parse(&data).ok()
+}
+
 fn cmd_dump(args: &[String]) -> kzn::Result<()> {
     if args.len() < 3 {
         usage();
@@ -437,6 +445,9 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
         let e = archive.find(name).unwrap();
         let script = isf::Script::parse(archive.bytes(e), &secret)?;
         let mut vm = isf::Vm::new(&script, steps).with_modules(mods.clone(), &stem_of(name));
+        if let Some(sf) = &save_beside(&args[0]) {
+            vm.load_system(sf);
+        }
         vm.stop_on_repeat = true;
         let halt = vm.run()?;
         let texts = vm.events.iter().filter(|e| matches!(e, isf::Event::Text { .. })).count();
@@ -461,6 +472,24 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                     writeln!(f, "[BGM_VOL] {} {}", *looping as u8, volume)?
                 }
                 isf::Event::BgmLevel(v) => writeln!(f, "[BGM_LEVEL] {}", v)?,
+                isf::Event::GlobalSave { start, count, x, which } => {
+                    writeln!(f, "[GSAVE] which={} start={} count={} x={}", which, start, count, x)?
+                }
+                isf::Event::GlobalLoad { start, count, x, which } => {
+                    writeln!(f, "[GLOAD] which={} start={} count={} x={}", which, start, count, x)?
+                }
+                isf::Event::Surface { index, w, h } => {
+                    writeln!(f, "[SURF] idx={} {}x{}", index, w, h)?
+                }
+                isf::Event::SurfaceRect { index, x, y } => {
+                    writeln!(f, "[SURF_POS] idx={} {},{}", index, x, y)?
+                }
+                isf::Event::WindowRect { surface, r, g, b } => {
+                    writeln!(f, "[WIN_COLOR] surf={} rgb={:02x}{:02x}{:02x}", surface, r, g, b)?
+                }
+                isf::Event::WindowFx { value, r, g, b, flag } => {
+                    writeln!(f, "[WIN_FX] value={} rgb={:02x}{:02x}{:02x} flag={}", value, r, g, b, flag)?
+                }
                 isf::Event::Draw { cmd, img, x, y, w, h, dur, dx, dy, extra } => {
                     let mut line = format!(
                         "[DRAW] cmd={} img={} src={},{},{},{} dur={} dst={},{}",

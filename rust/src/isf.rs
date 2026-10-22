@@ -259,6 +259,20 @@ pub enum Event {
     BgmVolume { looping: bool, volume: u32 },
     /// `0x72 <u32 音量>`：0 表示停掉 BGM。
     BgmLevel(u32),
+    /// `0x49 <start> <count> <x> <u8 which>`：把全局数组写回存档块 27/28。
+    /// `which` 0 = 位数组（块 27），1 = 变量数组（块 28）；第三个操作数引擎读了但没用。
+    GlobalSave { start: i32, count: i32, x: i32, which: u8 },
+    /// `0x4A <start> <count> <x> <u8 which>`：从存档块 27/28 读回全局数组。
+    GlobalLoad { start: i32, count: i32, x: i32, which: u8 },
+    /// `0x50 <idx> <w> <h>`：分配一块离屏画布（FUN_0040C3C0）。
+    Surface { index: i32, w: i32, h: i32 },
+    /// `0x51 <idx> <x> <y>`：设置离屏画布贴在画面上的位置（FUN_0040D2E0）。
+    SurfaceRect { index: i32, x: i32, y: i32 },
+    /// `0x53 <surface> <r> <g> <b>`：文字窗口底色（FUN_0040D350）。
+    WindowRect { surface: i32, r: u8, g: u8, b: u8 },
+    /// `0x55 <value> <r> <g> <b> <u8 flag>`：窗口淡入淡出/特效（FUN_00439680）。
+    /// `value` 为 0 时只改颜色；非 0 时按毫秒做过渡。
+    WindowFx { value: i32, r: u8, g: u8, b: u8, flag: u8 },
     /// `0x57`：把图像画到画面上。`img` 是 `0x56` 注册表里的序号，
     /// `(x,y,w,h)` 是源矩形，`(dx,dy)` 是目标位置，`dur` 是过渡时长（毫秒）。
     Draw { cmd: u8, img: i32, x: i32, y: i32, w: i32, h: i32, dur: i32, dx: i32, dy: i32,
@@ -424,6 +438,10 @@ pub struct Vm {
     pub slots: Vec<Slot>,
     /// 每条台词出现时的背景名（槽 0 的图像解析结果）。
     pub text_bg: Vec<Option<String>>,
+    /// 存档块 27（全局位数组的落盘副本），`0x49/0x4A` 直接读写它。
+    pub sys27: Vec<u8>,
+    /// 存档块 28（全局变量数组的落盘副本）。
+    pub sys28: Vec<u8>,
 }
 
 impl Vm {
@@ -462,6 +480,92 @@ impl Vm {
             images: Default::default(),
             slots: vec![Slot::default(); 64],
             text_bg: Vec::new(),
+            sys27: Vec::new(),
+            sys28: Vec::new(),
+        }
+    }
+
+    /// 把存档里的块 27/28 装进来（对应引擎打开 KIZUNAR.SAV 后读到的那两块）。
+    pub fn load_system(&mut self, sf: &crate::sav::SaveFile) {
+        self.sys27 = sf.system_block(27).to_vec();
+        self.sys28 = sf.system_block(28).to_vec();
+    }
+
+    /// `0x4A`：从块 27/28 读回全局数组。位数组按 LSB-first 原样存放，
+    /// 变量数组是裸 u32，都从块首算起。
+    fn global_load(&mut self, start: i32, count: i32, which: u8) {
+        if start < 0 || count <= 0 {
+            return;
+        }
+        let start = start as usize;
+        let count = count as usize;
+        if which == 0 {
+            if start >= self.bits_n {
+                return;
+            }
+            let base = start / 8;
+            let end = (start + count).min(self.bits_n);
+            for i in start..end {
+                let at = base + (i / 8 - base);
+                let bit = match self.sys27.get(at) {
+                    Some(&b) => (b >> (i & 7)) & 1,
+                    None => 0,
+                };
+                self.bits[i] = bit;
+            }
+        } else if which == 1 {
+            if start >= self.vars_n {
+                return;
+            }
+            let end = (start + count).min(self.vars_n).min(self.vars.len());
+            for i in start..end {
+                let at = i * 4;
+                let v = match self.sys28.get(at..at + 4) {
+                    Some(b) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                    None => 0,
+                };
+                self.vars[i] = v;
+            }
+        }
+    }
+
+    /// `0x49`：把全局数组写回块 27/28（存档时随文件一起落盘）。
+    fn global_store(&mut self, start: i32, count: i32, which: u8) {
+        if start < 0 || count <= 0 {
+            return;
+        }
+        let start = start as usize;
+        let count = count as usize;
+        if which == 0 {
+            if start >= self.bits_n {
+                return;
+            }
+            let base = start / 8;
+            let end = (start + count).min(self.bits_n);
+            let need = base + (end.div_ceil(8) - base);
+            if self.sys27.len() < need {
+                self.sys27.resize(need, 0);
+            }
+            for i in start..end {
+                let at = base + (i / 8 - base);
+                if self.bits[i] != 0 {
+                    self.sys27[at] |= 1 << (i & 7);
+                } else {
+                    self.sys27[at] &= !(1 << (i & 7));
+                }
+            }
+        } else if which == 1 {
+            if start >= self.vars_n {
+                return;
+            }
+            let end = (start + count).min(self.vars_n).min(self.vars.len());
+            let need = end * 4;
+            if self.sys28.len() < need {
+                self.sys28.resize(need, 0);
+            }
+            for i in start..end {
+                self.sys28[i * 4..i * 4 + 4].copy_from_slice(&self.vars[i].to_le_bytes());
+            }
         }
     }
 
@@ -863,6 +967,61 @@ impl Vm {
                 // FUN_0043AAF0：音量操作数，< 1 表示停
                 let level = self.val() as u32;
                 self.events.push(Event::BgmLevel(level));
+                Ok(false)
+            }
+            0x49 => {
+                // FUN_00439000：把全局数组的一段写回存档块 27/28。
+                let start = self.val();
+                let count = self.val();
+                let x = self.val();
+                let which = self.take_u8();
+                self.global_store(start, count, which);
+                self.events.push(Event::GlobalSave { start, count, x, which });
+                Ok(false)
+            }
+            0x4A => {
+                // FUN_00439060：从存档块 27/28 读回全局数组的一段。
+                let start = self.val();
+                let count = self.val();
+                let x = self.val();
+                let which = self.take_u8();
+                self.global_load(start, count, which);
+                self.events.push(Event::GlobalLoad { start, count, x, which });
+                Ok(false)
+            }
+            0x50 => {
+                // FUN_00439480：<序号> <宽> <高>
+                let index = self.val();
+                let w = self.val();
+                let h = self.val();
+                self.events.push(Event::Surface { index, w, h });
+                Ok(false)
+            }
+            0x51 => {
+                // FUN_004394E0：<序号> <x> <y>
+                let index = self.val();
+                let x = self.val();
+                let y = self.val();
+                self.events.push(Event::SurfaceRect { index, x, y });
+                Ok(false)
+            }
+            0x53 => {
+                // FUN_00439550：<窗口> <r> <g> <b>
+                let surface = self.val();
+                let r = self.take_u8();
+                let g = self.take_u8();
+                let b = self.take_u8();
+                self.events.push(Event::WindowRect { surface, r, g, b });
+                Ok(false)
+            }
+            0x55 => {
+                // FUN_00439680：<时长> <r> <g> <b> <u8 标志>
+                let value = self.val();
+                let r = self.take_u8();
+                let g = self.take_u8();
+                let b = self.take_u8();
+                let flag = self.take_u8();
+                self.events.push(Event::WindowFx { value, r, g, b, flag });
                 Ok(false)
             }
             0x57 => {

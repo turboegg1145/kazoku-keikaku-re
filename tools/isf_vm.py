@@ -101,6 +101,9 @@ class VM:
         self.seen_n = 1024
         # 输入状态字节（引擎 vm+0x549/0x54A/0x54C/0x54D/0x54E），0x3A 会读它们。
         self.b549 = self.b54a = self.b54c = self.b54d = self.b54e = 0
+        # 存档块 27/28：全局位数组 / 变量数组的落盘副本，0x49/0x4A 直接读写。
+        self.sys27 = bytearray()
+        self.sys28 = bytearray()
 
     # ---- 取指原语（对应 FUN_00434960/80/90）----
     def u8(self):
@@ -132,6 +135,54 @@ class VM:
 
     def val(self):
         return self.operand(self.u32raw())
+
+    # ---- 存档块 27/28 的全局数组读写（0x49/0x4A）----
+    def global_load(self, start, count, which):
+        if start < 0 or count <= 0:
+            return
+        if which == 0:
+            if start >= self.bits_n:
+                return
+            base = start // 8
+            for i in range(start, min(start + count, self.bits_n)):
+                at = base + (i // 8 - base)
+                self.bits[i] = (self.sys27[at] >> (i & 7)) & 1 if at < len(self.sys27) else 0
+        elif which == 1:
+            if start >= self.vars_n:
+                return
+            for i in range(start, min(start + count, self.vars_n, MAX_VARS)):
+                at = i * 4
+                if at + 4 <= len(self.sys28):
+                    self.vars[i] = struct.unpack_from("<i", self.sys28, at)[0]
+                else:
+                    self.vars[i] = 0
+
+    def global_store(self, start, count, which):
+        if start < 0 or count <= 0:
+            return
+        if which == 0:
+            if start >= self.bits_n:
+                return
+            base = start // 8
+            end = min(start + count, self.bits_n)
+            need = base + (end + 7) // 8 - base
+            if len(self.sys27) < need:
+                self.sys27.extend(b"\x00" * (need - len(self.sys27)))
+            for i in range(start, end):
+                at = base + (i // 8 - base)
+                if self.bits[i]:
+                    self.sys27[at] |= 1 << (i & 7)
+                else:
+                    self.sys27[at] &= ~(1 << (i & 7)) & 0xFF
+        elif which == 1:
+            if start >= self.vars_n:
+                return
+            end = min(start + count, self.vars_n, MAX_VARS)
+            need = end * 4
+            if len(self.sys28) < need:
+                self.sys28.extend(b"\x00" * (need - len(self.sys28)))
+            for i in range(start, end):
+                struct.pack_into("<i", self.sys28, i * 4, self.vars[i])
 
     def jump_label(self, idx):
         if not (0 <= idx < len(self.labels)):
@@ -424,6 +475,50 @@ class VM:
             self.texts.append((spk, txt, self.voice))
             self.events.append(("TEXT", spk, txt, self.voice))
             self.voice = None
+            return False
+        if op == 0x49:
+            # FUN_00439000：把全局数组的一段写回存档块 27/28
+            start = self.val()
+            count = self.val()
+            x = self.val()
+            which = self.u8()
+            self.global_store(start, count, which)
+            self.events.append(("GSAVE", which, start, count, x))
+            return False
+        if op == 0x4A:
+            # FUN_00439060：从存档块 27/28 读回全局数组的一段
+            start = self.val()
+            count = self.val()
+            x = self.val()
+            which = self.u8()
+            self.global_load(start, count, which)
+            self.events.append(("GLOAD", which, start, count, x))
+            return False
+        if op == 0x50:
+            # FUN_00439480：<序号> <宽> <高>
+            idx = self.val()
+            w = self.val()
+            h = self.val()
+            self.events.append(("SURF", idx, w, h))
+            return False
+        if op == 0x51:
+            # FUN_004394E0：<序号> <x> <y>
+            idx = self.val()
+            x = self.val()
+            y = self.val()
+            self.events.append(("SURF_POS", idx, x, y))
+            return False
+        if op == 0x53:
+            # FUN_00439550：<窗口> <r> <g> <b>
+            surf = self.val()
+            r, g, b = self.u8(), self.u8(), self.u8()
+            self.events.append(("WIN_COLOR", surf, r, g, b))
+            return False
+        if op == 0x55:
+            # FUN_00439680：<时长> <r> <g> <b> <u8 标志>
+            value = self.val()
+            r, g, b, flag = self.u8(), self.u8(), self.u8(), self.u8()
+            self.events.append(("WIN_FX", value, r, g, b, flag))
             return False
         if op == 0x57:
             # FUN_004398C0：8 个操作数 + 按 cmd 追加的额外操作数
