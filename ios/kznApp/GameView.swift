@@ -3,9 +3,12 @@ import Metal
 import QuartzCore
 import UIKit
 
-/// 一开始跑哪个剧本。正式版应该进 START.ISF（标题画面），
-/// 但标题菜单的 0x48 存读档还没接，先用第一章验证画面/声音/点击。
-let kStartScript = "SNR00.ISF"
+/// 一开始跑哪个剧本。START.ISF 负责初始化（0x48 确定存档数组尺寸、读已读位图、
+/// 建 6 块面），然后自己跳进第一章。
+let kStartScript = "START.ISF"
+
+/// 让 SwiftUI 的菜单按钮能拿到引擎（只有一个 GameUIView）。
+weak var kGame: GameUIView?
 
 struct GameView: UIViewRepresentable {
     func makeUIView(context: Context) -> GameUIView {
@@ -35,6 +38,7 @@ final class GameUIView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        kGame = self
         setupMetal()
         setupEngine()
         let link = CADisplayLink(target: self, selector: #selector(tick))
@@ -171,6 +175,30 @@ final class GameUIView: UIView {
         guard let engine = engine, let t = touches.first else { return }
         let p = gamePoint(t.location(in: self))
         kzn_mouse(engine, Int32(p.x), Int32(p.y))
+        kzn_save_move(engine, Int32(p.x), Int32(p.y))
+    }
+
+    // MARK: - 存读档界面
+
+    /// mode: 0 = 读档，1 = 存档。
+    func openSave(_ mode: Int32) {
+        guard let engine = engine else { return }
+        _ = kzn_save_open(engine, mode)
+    }
+
+    func closeSave() {
+        guard let engine = engine else { return }
+        kzn_save_close(engine)
+    }
+
+    func flipPage(_ delta: Int32) {
+        guard let engine = engine else { return }
+        kzn_save_page(engine, delta)
+    }
+
+    var saveActive: Bool {
+        guard let engine = engine else { return false }
+        return kzn_save_active(engine) != 0
     }
 
     deinit {

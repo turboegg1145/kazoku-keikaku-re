@@ -15,6 +15,7 @@ pub mod ggd;
 pub mod render;
 pub mod isf;
 pub mod sav;
+pub mod saveui;
 pub mod sm2mpx;
 pub mod text;
 

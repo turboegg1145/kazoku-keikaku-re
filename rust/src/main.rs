@@ -71,6 +71,89 @@ fn cmd_sav(args: &[String]) -> kzn::Result<()> {
     Ok(())
 }
 
+fn cmd_save(args: &[String]) -> kzn::Result<()> {
+    use kzn::render::Player;
+    use kzn::saveui::{Mode, SaveScreen};
+    if args.is_empty() {
+        usage();
+    }
+    let dir = &args[0];
+    let page = flag(args, "--page", 0) as usize;
+    let cursor = flag(args, "--cursor", 0) as usize;
+    let put = args
+        .iter()
+        .position(|a| a == "--put")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok());
+    let script_name = args
+        .iter()
+        .position(|a| a == "--script")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "SNR01.ISF".to_string());
+    let out = args
+        .iter()
+        .position(|a| a == "-o")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "/tmp/saveui.png".to_string());
+    let font_path = args
+        .iter()
+        .position(|a| a == "--font")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
+
+    let mut scr = SaveScreen::open(dir, if put.is_some() { Mode::Save } else { Mode::Load });
+    scr.page = page.min(kzn::saveui::PAGES - 1);
+    scr.cursor = cursor.min(kzn::saveui::PER_PAGE - 1);
+    println!("存档：{} 格已用 / {}", scr.file.slots.iter().filter(|s| s.used()).count(), kzn::sav::SLOT_N);
+
+    // 需要一张游戏画面：跑到第一句台词就停
+    let font_data = std::fs::read(&font_path)?;
+    let assets = kzn::assets::Assets::open(dir, false)?;
+    let composer = kzn::compose::Composer::from_bytes(font_data, kzn::compose::TEXT_SIZE, &assets)?;
+    let exe_path = format!("{}/KIZUNAR.EXE", dir);
+    let arc_path = format!("{}/ISF", dir);
+    let script = load_script(&exe_path, &arc_path, &script_name)?;
+    let mods = load_modules(&exe_path, &arc_path)?;
+    let mut vm = isf::Vm::new(&script, 2_000_000).with_modules(mods, &stem_of(&script_name));
+    vm.stop_texts = Some(1);
+    let _ = vm.run()?;
+    let mut player = Player::new();
+    let mut raw_opt: Option<&[u8]> = None;
+    for ev in vm.events.iter() {
+        if let isf::Event::Text { raw, .. } = ev {
+            raw_opt = Some(raw.as_slice());
+        }
+        player.apply(ev, &assets);
+    }
+    let mut frame = composer.compose(&player, raw_opt, None);
+
+    if let Some(n) = put {
+        let n = n.min(kzn::sav::SLOT_N - 1);
+        // 只写副本，不碰游戏目录里的真存档
+        let copy = out.replace(".png", ".sav");
+        scr.page = n / kzn::saveui::PER_PAGE;
+        scr.cursor = n % kzn::saveui::PER_PAGE;
+        scr.path = copy.clone();
+        scr.save(&vm, &frame, 9 * 3600)?;
+        let back = std::fs::read(&copy)?;
+        println!("写入 データ{} -> {}（{} 字节）", n + 1, copy, back.len());
+        let re = kzn::sav::parse(&back)?;
+        println!("  回读：日期 {}，位数组 {} 字节，变量 {} 个",
+            kzn::saveui::date_text(&re.slots[n].time), re.slots[n].bits.len(), re.slots[n].vars.len());
+        println!("  逐字节回环：{}", if kzn::sav::build(&re) == back { "一致" } else { "不一致" });
+    }
+
+    scr.draw(&mut frame, &composer.font);
+    if args.iter().any(|a| a == "--ascii") {
+        println!("{}", frame.ascii(78, 26));
+    }
+    frame.write_png(&out)?;
+    println!("界面 -> {}", out);
+    Ok(())
+}
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -85,6 +168,7 @@ fn main() {
         "run" => cmd_run(&args[1..]),
         "dump" => cmd_dump(&args[1..]),
         "sav" => cmd_sav(&args[1..]),
+        "save" => cmd_save(&args[1..]),
         "audio" => cmd_audio(&args[1..]),
         "play" => cmd_play(&args[1..]),
         "mask" => cmd_mask(&args[1..]),

@@ -32,6 +32,10 @@ pub struct Kzn {
     error: Option<String>,
     /// 游戏目录：`0x48` 从这里读写 `KIZUNAR.SAV`。
     dir: String,
+    /// 存读档界面（打开时盖在游戏画面上）。
+    save_ui: Option<crate::saveui::SaveScreen>,
+    /// 本地时区相对 UTC 的秒数（东京 = 32400），存档日期用。
+    offset_secs: i64,
 }
 
 fn cstr<'a>(p: *const c_char) -> Option<&'a str> {
@@ -69,7 +73,16 @@ pub extern "C" fn kzn_open(dir: *const c_char, audio: c_int, font: *const c_char
     let Ok(composer) = Composer::from_bytes(font_data, crate::compose::TEXT_SIZE, &assets) else {
         return std::ptr::null_mut();
     };
-    let k = Kzn { assets, composer, engine: None, steps: 5_000_000, error: None, dir: dir.to_string() };
+    let k = Kzn {
+        assets,
+        composer,
+        engine: None,
+        steps: 5_000_000,
+        error: None,
+        dir: dir.to_string(),
+        save_ui: None,
+        offset_secs: 9 * 3600,
+    };
     Box::into_raw(Box::new(k))
 }
 
@@ -168,6 +181,107 @@ pub extern "C" fn kzn_state(k: *mut Kzn) -> c_int {
 
 /// 出一帧 RGBA（640×480×4）。返回写入的字节数。
 #[no_mangle]
+
+/// 打开存读档界面：`mode` 0 = 读档，1 = 存档。返回 1 表示已打开。
+#[no_mangle]
+pub extern "C" fn kzn_save_open(k: *mut Kzn, mode: c_int) -> c_int {
+    let Some(k) = (unsafe { k.as_mut() }) else { return 0 };
+    if k.engine.is_none() {
+        return 0;
+    }
+    let m = if mode == 1 { crate::saveui::Mode::Save } else { crate::saveui::Mode::Load };
+    k.save_ui = Some(crate::saveui::SaveScreen::open(&k.dir, m));
+    1
+}
+
+/// 关闭存读档界面。
+#[no_mangle]
+pub extern "C" fn kzn_save_close(k: *mut Kzn) {
+    if let Some(k) = unsafe { k.as_mut() } {
+        k.save_ui = None;
+    }
+}
+
+/// 存读档界面是否开着。
+#[no_mangle]
+pub extern "C" fn kzn_save_active(k: *mut Kzn) -> c_int {
+    let Some(k) = (unsafe { k.as_mut() }) else { return 0 };
+    if k.save_ui.is_some() { 1 } else { 0 }
+}
+
+/// 鼠标移动：更新当前高亮格。
+#[no_mangle]
+pub extern "C" fn kzn_save_move(k: *mut Kzn, x: i32, y: i32) {
+    let Some(k) = (unsafe { k.as_mut() }) else { return };
+    let Some(s) = k.save_ui.as_mut() else { return };
+    if let Some(crate::saveui::Action::Hover(i)) = s.hit(x, y) {
+        s.cursor = i;
+    }
+}
+
+/// 翻页：`delta` -1 / +1。
+#[no_mangle]
+pub extern "C" fn kzn_save_page(k: *mut Kzn, delta: c_int) {
+    let Some(k) = (unsafe { k.as_mut() }) else { return };
+    let Some(s) = k.save_ui.as_mut() else { return };
+    let n = crate::saveui::PAGES as i32;
+    s.page = ((s.page as i32 + delta).rem_euclid(n)) as usize;
+}
+
+/// 处理一次点击。返回 1 表示界面吃掉了这次点击（不传给剧本）。
+fn save_click(k: &mut Kzn, x: i32, y: i32) -> bool {
+    let mut done = false;
+    {
+        let Some(s) = k.save_ui.as_mut() else { return false };
+        let Some(a) = s.hit(x, y) else { return true };
+        match a {
+            crate::saveui::Action::Hover(i) => {
+                s.cursor = i;
+            }
+            crate::saveui::Action::Prev => {
+                s.page = (s.page + crate::saveui::PAGES - 1) % crate::saveui::PAGES;
+            }
+            crate::saveui::Action::Next => {
+                s.page = (s.page + 1) % crate::saveui::PAGES;
+            }
+            crate::saveui::Action::Cancel => {
+                done = true;
+            }
+            crate::saveui::Action::Ok | crate::saveui::Action::Pick(_) => {
+                if let crate::saveui::Action::Pick(i) = a {
+                    s.cursor = i;
+                }
+                match s.mode {
+                    crate::saveui::Mode::Save => {
+                        let Some(e) = k.engine.as_ref() else { return true };
+                        let (raw, shown) = match e.line.as_ref() {
+                            Some(l) if l.total > 0 => (Some(&l.raw[..]), Some(l.shown as usize)),
+                            _ => (None, None),
+                        };
+                        let frame = k.composer.compose(&e.player, raw, shown);
+                        let off = k.offset_secs;
+                        let vm = &e.vm;
+                        match s.save(vm, &frame, off) {
+                            Ok(()) => done = true,
+                            Err(err) => s.message = format!("保存失败：{}", err),
+                        }
+                    }
+                    crate::saveui::Mode::Load => {
+                        let Some(e) = k.engine.as_mut() else { return true };
+                        match s.load(&mut e.vm) {
+                            Ok(()) => done = true,
+                            Err(err) => s.message = format!("读取失败：{}", err),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if done {
+        k.save_ui = None;
+    }
+    true
+}
 pub extern "C" fn kzn_frame(k: *mut Kzn, out: *mut u8) -> c_int {
     let Some(k) = (unsafe { k.as_mut() }) else { return -1 };
     let Some(e) = k.engine.as_ref() else { return -1 };
@@ -178,7 +292,10 @@ pub extern "C" fn kzn_frame(k: *mut Kzn, out: *mut u8) -> c_int {
         Some(l) if l.total > 0 => (Some(&l.raw[..]), Some(l.shown as usize)),
         _ => (None, None),
     };
-    let cv = k.composer.compose(&e.player, raw, shown);
+    let mut cv = k.composer.compose(&e.player, raw, shown);
+    if let Some(s) = k.save_ui.as_ref() {
+        s.draw(&mut cv, &k.composer.font);
+    }
     let n = cv.pixels.len();
     unsafe { std::ptr::copy_nonoverlapping(cv.pixels.as_ptr(), out, n) };
     n as c_int
@@ -198,6 +315,9 @@ pub extern "C" fn kzn_mouse(k: *mut Kzn, x: i32, y: i32) {
 #[no_mangle]
 pub extern "C" fn kzn_click(k: *mut Kzn, x: i32, y: i32) -> c_int {
     let Some(k) = (unsafe { k.as_mut() }) else { return 0 };
+    if k.save_ui.is_some() {
+        return if save_click(k, x, y) { 1 } else { 0 };
+    }
     let Some(e) = k.engine.as_mut() else { return 0 };
     if e.click(x, y, &k.assets, &k.assets) { 1 } else { 0 }
 }

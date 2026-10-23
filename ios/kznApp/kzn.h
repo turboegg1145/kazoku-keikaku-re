@@ -36,6 +36,13 @@ int  kzn_choice_text(Kzn *k, int w, int i, char *out, int cap);
 int  kzn_choice_rect(Kzn *k, int w, int i, int32_t *out);
 int  kzn_error(Kzn *k, char *out, int cap);
 
+// 存读档界面（原版是 Win32 对话框，这里按同一套几何重画）
+int  kzn_save_open(Kzn *k, int mode);   // mode: 0 = 读档, 1 = 存档
+void kzn_save_close(Kzn *k);
+int  kzn_save_active(Kzn *k);
+void kzn_save_move(Kzn *k, int x, int y);
+void kzn_save_page(Kzn *k, int delta);
+
 #ifdef __cplusplus
 }
 #endif
