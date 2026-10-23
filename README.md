@@ -1,6 +1,19 @@
-# 家族計画 ～追憶～ / KIZUNAR (GDT) 逆向笔记
+# 家族計画 ～追憶～ / KIZUNAR (GDT) 引擎重写
 
-目标：用 REA 分析 PC 版《家族計画～追憶～》的 GDT 引擎与数据格式，评估用 Rust 重写引擎并移植 iOS 的可行性。
+用 REA 逆向 PC 版《家族計画～追憶～》的 GDT 引擎，**用 Rust 重写并移植到 iOS**。
+93/93 条脚本指令、40 个剧本、存档格式全部还原，GitHub Actions 出未签名 ipa，
+TrollStore 直装。
+
+**本仓库只有源码，不含任何游戏数据。**
+
+```bash
+cargo build --release --manifest-path rust/Cargo.toml   # -> rust/target/release/kzn
+./rust/target/release/kzn abi <游戏目录> SNR01.ISF --frames 600
+```
+
+- iOS 包：Releases → `Kzn.ipa`（空壳，数据自己放 Documents，见 [ios/README.md](ios/README.md)）
+- 想装完直接玩：Windows 上把游戏文件夹拖到 `打包完整版.bat` 上，生成自带数据的 ipa
+- 接手开发先读 [docs/10-handover.md](docs/10-handover.md)
 
 - 样本：`E:\BaiduNetdiskDownload\gal\【PC汉化ADV】家族計画 ～追憶～\家族計画 ～追憶～`
 - 主程序：`KIZUNAR.EXE`（PE32, x86, MFC, 2005 D.O.）
