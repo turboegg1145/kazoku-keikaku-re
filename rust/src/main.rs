@@ -174,6 +174,7 @@ fn main() {
         "mask" => cmd_mask(&args[1..]),
         "text" => cmd_text(&args[1..]),
         "abi" => cmd_abi(&args[1..]),
+        "dis" => cmd_dis(&args[1..]),
         _ => usage(),
     };
     if let Err(e) = rc {
@@ -339,6 +340,29 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     let halt = vm.run()?;
     println!("{}: {}  steps={}", script_name, halt, vm.steps);
 
+    // --surfaces：把每块「面」单独存一张，用来核对 0x56 装图 / 0x57 搬运对不对。
+    if args.iter().any(|a| a == "--surfaces") {
+        std::fs::create_dir_all(outdir)?;
+        let mut probe = Player::new();
+        for ev in vm.events.iter() {
+            probe.apply(ev, &assets);
+        }
+        let mut names: Vec<&String> = probe.images.values().collect();
+        names.sort();
+        println!("  0x56 装图: {:?}", names);
+        for (i, s) in probe.surf.iter().enumerate() {
+            if let Some(cv) = s {
+                let (lit, bb) = cv.bright_bbox(1);
+                if lit == 0 {
+                    continue;
+                }
+                let path = format!("{}/surf_{:03}.png", outdir, i);
+                cv.write_png(&path)?;
+                println!("  面 {:3} 亮像素={:<7} bbox={:?} -> {}", i, lit, bb, path);
+            }
+        }
+    }
+
     // 第 k 句台词在事件流里的下标
     let text_at: Vec<usize> = vm
         .events
@@ -348,7 +372,22 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
         .map(|(i, _)| i)
         .collect();
     if text_at.is_empty() {
-        println!("这个脚本没有台词");
+        // 没有台词的脚本（TITLE/LOAD/SEXMODE 这类菜单）：把已经执行过的事件
+        // 全部灌进播放器，然后按当前状态渲一张，用来核对标题画面的构图。
+        std::fs::create_dir_all(outdir)?;
+        let mut player = Player::new();
+        for ev in vm.events.iter() {
+            player.apply(ev, &assets);
+        }
+        let cv = composer.compose(&player, None, None);
+        if args.iter().any(|a| a == "--ascii") {
+            println!("{}", cv.ascii(78, 26));
+        }
+        let path = format!("{}/000.png", outdir);
+        cv.write_png(&path)?;
+        let (lit, tb) = cv.bright_bbox(200);
+        println!("  无台词脚本，按当前状态截图 -> {} 亮像素={} bbox={:?}", path, lit, tb);
+        println!("绘制 {} 次，cmd 分布 {:?}", player.draws, player.cmds.iter().map(|(k, v)| (format!("{:#04x}", k), *v)).collect::<Vec<_>>());
         return Ok(());
     }
     let only_at = only_at_hint(args);
@@ -669,6 +708,13 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
             .map(|(a, o)| format!("{:#x}:{:02x}", a, o))
             .collect();
         println!("  最后 64 条: {}", tail.join(" "));
+        let probe = [0x0au16, 0x13, 0x14, 0x18, 0x07, 0x08, 0x09, 0x1e];
+        let kv: Vec<String> = probe
+            .iter()
+            .map(|i| format!("v[{:#04x}]={}", i, eng.vm.vars[*i as usize]))
+            .collect();
+        println!("  关键变量: {}", kv.join(" "));
+        println!("  当前模块: {} pc={:#x}", eng.vm.module, eng.vm.code);
     }
     if eng.player.shakes > 0 {
         println!("画面抖动 {} 次", eng.player.shakes);
@@ -738,6 +784,9 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                 }
                 isf::Event::Voice(v) => writeln!(f, "[VOICE] {}", v)?,
                 isf::Event::Image { index, name } => writeln!(f, "[IMAGE] {} {}", index, name)?,
+                isf::Event::Slot { index, rect, image } => {
+                    writeln!(f, "[SLOT] {} ({},{},{},{}) img={}", index, rect.0, rect.1, rect.2, rect.3, image)?
+                }
                 isf::Event::CmdName(v) => writeln!(f, "[CMDNAME] {}", v)?,
                 isf::Event::VoiceArchive(v) => writeln!(f, "[VOICE_ARC] {}", v)?,
                 isf::Event::JumpScript(v) => writeln!(f, "[JUMP] {}", v)?,
@@ -950,6 +999,129 @@ fn cmd_text(args: &[String]) -> kzn::Result<()> {
 /// `kzn abi <目录> <剧本> [--frames N] [--font 路径] [--out 文件]`
 ///
 /// 完全走 C ABI（iOS 端就是这条路径）跑一段，验证接口可用。
+/// 反汇编：用 Rust 侧的 split_ops（和虚拟机同一套切分）打印指令 + 标签表。
+///
+/// tools/isf_dis.py 在变长指令上会漂移（实测 TITLE.ISF 有 81/94 个标签落不到
+/// 指令边界），读菜单流程会读歪。这个子命令和虚拟机共用切分代码，标签能对上。
+fn cmd_dis(args: &[String]) -> kzn::Result<()> {
+    if args.len() < 2 {
+        usage();
+    }
+    let dir = &args[0];
+    let script_name = &args[1];
+    let from = flag(args, "--from", 0) as usize;
+    let count = flag(args, "--count", 100_000) as usize;
+
+    let exe_path = format!("{}/KIZUNAR.EXE", dir);
+    let arc_path = format!("{}/ISF", dir);
+    let script = load_script(&exe_path, &arc_path, script_name)?;
+    let ops = isf::split_ops(&script.plain, script.head_len)?;
+
+    // 标签值相对代码基址，换成指令序号
+    let mut by_off: std::collections::HashMap<u32, usize> = Default::default();
+    for (i, o) in ops.iter().enumerate() {
+        by_off.insert((o.offset - script.head_len) as u32, i);
+    }
+    let lab: Vec<Option<usize>> = script
+        .labels
+        .iter()
+        .map(|l| by_off.get(l).copied())
+        .collect();
+    let bad: Vec<usize> = lab
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    if bad.is_empty() {
+        println!("{}: {} 条指令，{} 个标签全部落在指令边界", script_name, ops.len(), lab.len());
+    } else {
+        println!(
+            "{}: {} 条指令，{} 个标签，{} 个没落边界 {:?}",
+            script_name,
+            ops.len(),
+            lab.len(),
+            bad.len(),
+            &bad[..bad.len().min(12)]
+        );
+    }
+    let lname = |l: u16| match lab.get(l as usize).and_then(|x| *x) {
+        Some(i) => format!("L{}→#{}", l, i),
+        None => format!("L{}→?", l),
+    };
+
+    for (i, o) in ops.iter().enumerate().skip(from).take(count) {
+        // 指令头是 2 字节（长格式 3 字节），len 含头
+        let head = if script.plain[o.offset + 1] & 0x80 != 0 { 3 } else { 2 };
+        let p = &script.plain[o.offset + head..o.offset + o.len];
+        let mut ann = String::new();
+        match o.code {
+            0x01 | 0x02 => {
+                let n = p.split(|b| *b == 0).next().unwrap_or(&[]);
+                ann = isf::decode_cp932(n);
+            }
+            0x04 | 0x05 if p.len() >= 2 => {
+                ann = lname(u16::from_le_bytes([p[0], p[1]]));
+            }
+            0x07 | 0x08 if p.len() >= 5 => {
+                let n = p[4] as usize;
+                let mut v = Vec::new();
+                for k in 0..n {
+                    let at = 5 + k * 2;
+                    if at + 2 <= p.len() {
+                        v.push(lname(u16::from_le_bytes([p[at], p[at + 1]])));
+                    }
+                }
+                ann = format!("n={} [{}]", n, v.join(" "));
+            }
+            0x47 => {
+                let mut q = 0usize;
+                let mut v = Vec::new();
+                while q + 10 <= p.len() {
+                    let a = i32::from_le_bytes([p[q], p[q + 1], p[q + 2], p[q + 3]]);
+                    let c = p[q + 4];
+                    let b = i32::from_le_bytes([p[q + 5], p[q + 6], p[q + 7], p[q + 8]]);
+                    let act = p[q + 9];
+                    q += 10;
+                    let op = ["==", "<", "<=", ">", ">=", "!="]
+                        .get(c as usize)
+                        .copied()
+                        .unwrap_or("?");
+                    match act {
+                        0 => {
+                            if q + 2 <= p.len() {
+                                let l = u16::from_le_bytes([p[q], p[q + 1]]);
+                                v.push(format!("{} {} {} → {}", a, op, b, lname(l)));
+                            }
+                            break;
+                        }
+                        1 => {
+                            if q + 6 <= p.len() {
+                                let slot = u16::from_le_bytes([p[q], p[q + 1]]);
+                                let val = i32::from_le_bytes([
+                                    p[q + 2],
+                                    p[q + 3],
+                                    p[q + 4],
+                                    p[q + 5],
+                                ]);
+                                v.push(format!("{} {} {} → vars[{}]={}", a, op, b, slot, val));
+                                q += 6;
+                            } else {
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+                ann = v.join(" ; ");
+            }
+            _ => {}
+        }
+        println!("{:5} {:06x} {:02x} {:<34} {}", i, o.offset, o.code, hexs(p), ann);
+    }
+    Ok(())
+}
+
 fn cmd_abi(args: &[String]) -> kzn::Result<()> {
     use kzn::capi as c;
     use std::ffi::CString;
@@ -966,6 +1138,16 @@ fn cmd_abi(args: &[String]) -> kzn::Result<()> {
         .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
     let font = CString::new(font_path).map_err(|_| kzn::Error("字体路径有 NUL".into()))?;
     let frames = flag(args, "--frames", 600) as usize;
+    // --click x,y：把「自动点一下」的位置换掉，用来驱动标题/鉴赏这类菜单。
+    let click_at: (i32, i32) = args
+        .iter()
+        .position(|a| a == "--click")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| {
+            let (a, b) = s.split_once(',')?;
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        })
+        .unwrap_or((300, 400));
     let out = args
         .iter()
         .position(|a| a == "--out")
@@ -1006,7 +1188,7 @@ fn cmd_abi(args: &[String]) -> kzn::Result<()> {
                 }
             }
             c::KZN_TEXT | c::KZN_INPUT => {
-                c::kzn_click(k, 300, 400);
+                c::kzn_click(k, click_at.0, click_at.1);
                 clicks += 1;
             }
             c::KZN_HALT | c::KZN_FAILED => break,

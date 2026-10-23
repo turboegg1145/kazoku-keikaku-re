@@ -27,18 +27,19 @@ pub struct InputState {
     pub ctrl: bool,
     /// 毫秒时钟（`0xFC` 读它）。
     pub clock: i32,
-    /// 热区矩形（屏幕坐标）。
-    pub spots: Vec<(i32, i32, i32, i32)>,
 }
 
 impl InputState {
     /// 光标命中哪个热区：-2 = 画面外，-1 = 没命中，>=0 = 热区号。
-    pub fn hit(&self) -> i32 {
+    ///
+    /// 热区表由脚本的 0x84 定义，每次 0x85 轮询时按当时的槽数传进来，
+    /// 所以这里不再自己存一份。原版是 FUN_00440910。
+    pub fn hit(&self, spots: &[(i32, i32, i32, i32)]) -> i32 {
         let (mx, my) = self.mouse;
         if mx < 0 || my < 0 || mx >= 640 || my >= 480 {
             return -2;
         }
-        for (i, r) in self.spots.iter().enumerate() {
+        for (i, r) in spots.iter().enumerate() {
             if mx >= r.0 && my >= r.1 && mx < r.0 + r.2 && my < r.1 + r.3 {
                 return i as i32;
             }
@@ -55,14 +56,16 @@ pub struct EngineHost {
 }
 
 impl Host for EngineHost {
-    fn poll_input(&mut self, _mode: u8, _flags: u8) -> (i32, i32) {
+    fn poll_input(&mut self, spots: &[(i32, i32, i32, i32)], _want_confirm: bool) -> (i32, i32) {
         let mut s = self.st.borrow_mut();
+        let hit = s.hit(spots);
         if !s.clicked {
-            return (-1, 0);
+            return (hit, 0);
         }
         // 一次点击只算一次，避免脚本在一帧里循环轮询时被重复消费。
         s.clicked = false;
-        (s.hit(), 2)
+        // 触摸/左键在原版里就是「确定」（事件 2）；want_confirm 只影响取消键。
+        (hit, 2)
     }
 
     fn now_ms(&mut self) -> i32 {
@@ -189,11 +192,9 @@ impl Engine {
         let st = Rc::new(RefCell::new(InputState::default()));
         vm.host = Box::new(EngineHost { st: st.clone(), dir: None });
         vm.block_on_input = true;
-        // 消息窗口本身就是一个热区（原版里点它推进台词）。
-        {
-            let (mx, my) = Player::new().msg_origin();
-            st.borrow_mut().spots = vec![(mx, my, 552, 152)];
-        }
+        // 主循环是「有人在玩」的路径：输入必须真的走热区表，
+        // 不能像 dump 那样假装点了第一个热区（否则标题菜单会被直接点掉）。
+        vm.auto = false;
         Engine {
             vm,
             player: Player::new(),
@@ -291,8 +292,12 @@ impl Engine {
             }
             if self.vm.poll_wait {
                 idle += 1;
-                // 连续轮询却没有任何新事件：脚本在等玩家，把控制权交出去。
-                if idle >= 32 {
+                // 轮询到「没有输入」就立刻把控制权交出去。
+                //
+                // 原版是消息循环每条指令调一次 FUN_00434EC0，等输入/等计时器的循环
+                // 天然会被消息循环切开；我们这里是「一帧跑一批指令」，如果一口气跑完
+                // 整个等待循环，时钟（0xFC）永远不变，脚本就卡死在里面。
+                if idle >= 1 {
                     self.wait = self.blocked_wait();
                     return;
                 }

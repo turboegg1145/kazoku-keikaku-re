@@ -205,7 +205,14 @@ pub const MAX_RET: usize = 0x400;
 /// 移植时这一层换成 UIKit / SDL / 触摸事件即可，VM 本身不用改。
 pub trait Host {
     /// `0x85`：返回 (热区号, 事件)。热区 -1 = 没指到，-2 = 画面外；事件 0/2/-1。
-    fn poll_input(&mut self, _mode: u8, _flags: u8) -> (i32, i32) {
+    ///
+    /// `spots` 是本次参与命中的槽矩形（引擎 FUN_00440B40 会先把 +0x7E8 设成 mode，
+    /// 再调 FUN_00440910 在 0..mode 里找第一个命中的）。`want_confirm` 对应 flags 的 bit0。
+    fn poll_input(
+        &mut self,
+        _spots: &[(i32, i32, i32, i32)],
+        _want_confirm: bool,
+    ) -> (i32, i32) {
         (-1, 0)
     }
 
@@ -317,7 +324,9 @@ pub enum Event {
     CondGroup { index: u8, slots: [i32; 8] },
     /// `0x8F`：把 64 个条件组的有效标志全清掉。
     CondGroupClear,
-    /// `0xA0`：FUN_00414760（存档菜单相关）。
+    /// `0x84 <槽> <left> <top> <right> <bottom> ...`：定义绘制槽，也就是命中热区。
+    Slot { index: usize, rect: (i32, i32, i32, i32), image: u16 },
+    /// `0xA0`：FUN_00414760（清空「面文本」列表）。
     SaveMenuDraw,
     /// `0xA1 <6 字节>`：FUN_00414770 配色。
     Color6([u8; 6]),
@@ -507,14 +516,40 @@ pub fn decode_cp932(raw: &[u8]) -> String {
 }
 
 /// 绘制槽（engine+0xE0，64 项 × 0x1C 字节）。
+///
+/// 前 4 个字段是 RECT（left / top / right / bottom），不是 x/y/宽/高。
+/// 反编译 FUN_0043B6F0 是连读 4 个 u32 直接存进去，而命中测试 FUN_00440910
+/// 用 PtInRect((RECT*)(slot+0), pt) 判定——所以 TITLE 里的
+///   84 00 | 4c 02 00 00 | 34 01 00 00 | 67 02 00 00 | c7 01 00 00
+/// 表示 588..615 × 308..455 的竖条，不是「x=588 宽=615」。
 #[derive(Clone, Copy, Default)]
 pub struct Slot {
-    pub x: u32,
-    pub y: u32,
-    pub w: u32,
-    pub h: u32,
+    pub l: i32,
+    pub t: i32,
+    pub r: i32,
+    pub b: i32,
     pub layer: u8,
     pub image: u16,
+    /// 0x84 尾巴上的 3 个字节（引擎 +0x16/+0x15/+0x14），含义还没钉死。
+    pub f6: u8,
+    pub f5: u8,
+    pub f4: u8,
+}
+
+impl Slot {
+    pub fn w(&self) -> i32 {
+        (self.r - self.l).max(0)
+    }
+    pub fn h(&self) -> i32 {
+        (self.b - self.t).max(0)
+    }
+    /// 给命中测试用的 (x, y, 宽, 高)。
+    pub fn rect(&self) -> (i32, i32, i32, i32) {
+        (self.l, self.t, self.w(), self.h())
+    }
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.l && x < self.r && y >= self.t && y < self.b
+    }
 }
 
 /// 0x37 系统功能维护的全局开关（引擎里的 DAT_004891b8..004891ee / 004892e4/e5）。
@@ -612,6 +647,8 @@ pub struct Vm {
     pub images: std::collections::HashMap<u32, String>,
     /// 绘制槽：`0x84`。
     pub slots: Vec<Slot>,
+    /// 上一次 `0x85` 参与命中的槽数（引擎 +0x7E8）。
+    pub slot_count: u8,
     /// 每条台词出现时的背景名（槽 0 的图像解析结果）。
     pub text_bg: Vec<Option<String>>,
     /// 存档块 27（全局位数组的落盘副本），`0x49/0x4A` 直接读写它。
@@ -682,6 +719,7 @@ impl Vm {
             stop_on_repeat: false,
             images: Default::default(),
             slots: vec![Slot::default(); 64],
+            slot_count: 0,
             text_bg: Vec::new(),
             sys27: Vec::new(),
             sys28: Vec::new(),
@@ -1179,20 +1217,22 @@ impl Vm {
             }
             0x84 => {
                 // FUN_0043B6F0：定义绘制槽（64 项，engine+0xE0）
-                // 84 <u8 slot> <u32 x> <u32 y> <u32 w> <u32 h> <u8 layer> <u16 img> <u8> <u8> <u8>
+                // 84 <u8 slot> <i32 left> <i32 top> <i32 right> <i32 bottom>
+                //    <u8 layer> <u16 img> <u8 f6> <u8 f5> <u8 f4>
                 let slot = (self.take_u8() & 0x3F) as usize;
-                let x = self.take_u32();
-                let y = self.take_u32();
-                let w = self.take_u32();
-                let h = self.take_u32();
+                let l = self.take_u32() as i32;
+                let t = self.take_u32() as i32;
+                let r = self.take_u32() as i32;
+                let b = self.take_u32() as i32;
                 let layer = self.take_u8();
                 let image = self.take_u16();
-                let _f6 = self.take_u8();
-                let _f5 = self.take_u8();
-                let _f4 = self.take_u8();
+                let f6 = self.take_u8();
+                let f5 = self.take_u8();
+                let f4 = self.take_u8();
                 if slot < self.slots.len() {
-                    self.slots[slot] = Slot { x, y, w, h, layer, image };
+                    self.slots[slot] = Slot { l, t, r, b, layer, image, f6, f5, f4 };
                 }
+                self.events.push(Event::Slot { index: slot, rect: (l, t, r, b), image });
                 Ok(false)
             }
             0x31 => {
@@ -1858,16 +1898,25 @@ impl Vm {
                 Ok(false)
             }
             0x85 => {
+                // FUN_0043B800：85 <u16 var_a> <u16 var_b> <u8 槽数> <u8 flags>
+                //   槽数 = 引擎 +0x7E8，只有 0..槽数-1 号槽参与命中
+                //   flags bit0 = 要确认键（param_4），bit1 = 只更新悬停（FUN_004407A0）
                 let va = self.take_u16();
                 let vb = self.take_u16();
                 let mode = self.take_u8();
                 let flags = self.take_u8();
+                self.slot_count = mode;
                 if flags & 2 == 0 {
+                    let n = (mode as usize).min(self.slots.len());
+                    let mut rects = [(0i32, 0i32, 0i32, 0i32); 64];
+                    for i in 0..n {
+                        rects[i] = self.slots[i].rect();
+                    }
                     let (spot, ev) = if self.auto {
                         // 无人值守：当作点了第一个热区，把剧本一路推到底。
-                        (0, 2)
+                        if n == 0 { (-1, 0) } else { (0, 2) }
                     } else {
-                        self.host.poll_input(mode, flags & 1)
+                        self.host.poll_input(&rects[..n], flags & 1 != 0)
                     };
                     if ev == 0 {
                         // 没有输入：脚本会自己循环回来，主循环把它当「等玩家」。
