@@ -277,7 +277,7 @@ impl Engine {
         let events = self.vm.drain_events();
         for ev in events {
             match &ev {
-                Event::Text { speaker, text, voice } => {
+                Event::Text { speaker, text, voice, .. } => {
                     self.lines += 1;
                     let l = Line::new(*speaker, text.clone(), voice.clone());
                     self.log.push(l.clone());

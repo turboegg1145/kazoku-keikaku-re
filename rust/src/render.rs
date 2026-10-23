@@ -107,28 +107,42 @@ impl Canvas {
     ) -> f32 {
         let mut pen = x as f32;
         for ch in text.chars() {
-            let (m, bitmap) = font.rasterize(ch, size);
-            if m.width > 0 && m.height > 0 {
-                let gx = pen as isize + m.xmin as isize;
-                let gy = y + size as isize - m.height as isize - m.ymin as isize;
-                for row in 0..m.height {
-                    for col in 0..m.width {
-                        let cov = bitmap[row * m.width + col] as u32;
-                        if cov == 0 {
-                            continue;
-                        }
-                        let tx = gx + col as isize;
-                        let ty = gy + row as isize;
-                        if tx < 0 || ty < 0 || tx >= self.width as isize || ty >= self.height as isize {
-                            continue;
-                        }
-                        self.blend(tx as usize, ty as usize, color.0 as u32, color.1 as u32, color.2 as u32, cov);
-                    }
-                }
-            }
-            pen += m.advance_width;
+            self.draw_glyph(font, ch, pen as isize, y, size, color);
+            pen += font.metrics(ch, size).advance_width;
         }
         pen - x as f32
+    }
+
+    /// 画一个字形。左上角约定和 draw_text 一致（y 是行顶）。
+    pub fn draw_glyph(
+        &mut self,
+        font: &fontdue::Font,
+        ch: char,
+        x: isize,
+        y: isize,
+        size: f32,
+        color: (u8, u8, u8),
+    ) {
+        let (m, bitmap) = font.rasterize(ch, size);
+        if m.width == 0 || m.height == 0 {
+            return;
+        }
+        let gx = x + m.xmin as isize;
+        let gy = y + size as isize - m.height as isize - m.ymin as isize;
+        for row in 0..m.height {
+            for col in 0..m.width {
+                let cov = bitmap[row * m.width + col] as u32;
+                if cov == 0 {
+                    continue;
+                }
+                let tx = gx + col as isize;
+                let ty = gy + row as isize;
+                if tx < 0 || ty < 0 || tx >= self.width as isize || ty >= self.height as isize {
+                    continue;
+                }
+                self.blend(tx as usize, ty as usize, color.0 as u32, color.1 as u32, color.2 as u32, cov);
+            }
+        }
     }
 
     /// 按像素宽度折行。日文可以任意断行，只要别让标点跑到行首。

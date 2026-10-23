@@ -245,7 +245,8 @@ impl Host for Headless {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Text { speaker: Option<u8>, text: String, voice: Option<String> },
+    /// 台词。raw 是原始载荷（含控制码），给 text 模块排版用。
+    Text { speaker: Option<u8>, text: String, voice: Option<String>, raw: Vec<u8> },
     Voice(String),
     Image { index: u32, name: String },
     CmdName(String),
@@ -812,7 +813,7 @@ impl Vm {
 
     pub fn texts(&self) -> impl Iterator<Item = (&Option<u8>, &String, &Option<String>)> {
         self.events.iter().filter_map(|e| match e {
-            Event::Text { speaker, text, voice } => Some((speaker, text, voice)),
+            Event::Text { speaker, text, voice, .. } => Some((speaker, text, voice)),
             _ => None,
         })
     }
@@ -1035,7 +1036,8 @@ impl Vm {
             0x2B => {
                 let (spk, txt) = decode_text(&self.plain[self.code..end]);
                 self.text_bg.push(self.current_bg());
-                self.events.push(Event::Text { speaker: spk, text: txt, voice: self.voice.take() });
+                let raw = self.plain[self.code..end].to_vec();
+                self.events.push(Event::Text { speaker: spk, text: txt, voice: self.voice.take(), raw });
                 self.text_count += 1;
                 if let Some(n) = self.stop_texts {
                     if self.text_count >= n {

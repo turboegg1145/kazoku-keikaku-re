@@ -20,6 +20,7 @@ fn usage() -> ! {
     eprintln!("  kzn run   <KIZUNAR.EXE> <ISF归档> <脚本名> [--steps N]");
     eprintln!("  kzn dump  <KIZUNAR.EXE> <ISF归档> <输出目录> [--steps N]");
     eprintln!("  kzn sav   <KIZUNAR.SAV> [--roundtrip]");
+    eprintln!("  kzn text  <游戏目录> <脚本名> [--lines N]   台词排版（位置/分屏/等待）");
     std::process::exit(2);
 }
 
@@ -86,6 +87,7 @@ fn main() {
         "audio" => cmd_audio(&args[1..]),
         "play" => cmd_play(&args[1..]),
         "mask" => cmd_mask(&args[1..]),
+        "text" => cmd_text(&args[1..]),
         _ => usage(),
     };
     if let Err(e) = rc {
@@ -215,7 +217,7 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     let outdir = &args[2];
     let steps = flag(args, "--steps", 2_000_000);
     let lines = flag(args, "--lines", 8) as usize;
-    let size = flag(args, "--size", 24) as f32;
+    let size = flag(args, "--size", 20) as f32;
     let font_path = args
         .iter()
         .position(|a| a == "--font")
@@ -312,12 +314,12 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
             written += 1;
             continue;
         }
-        if let isf::Event::Text { speaker, text, .. } = ev {
+        if let isf::Event::Text { speaker, text, raw, .. } = ev {
             if !pick.contains(&i) {
                 continue;
             }
             let mut cv = player.frame();
-            draw_message(&mut cv, &font, frame.as_ref(), *speaker, text, size);
+            let lay = draw_message(&mut cv, &font, frame.as_ref(), *speaker, raw, size);
             let org = frame_origin(&cv, frame.as_ref());
             draw_choices(&mut cv, &font, &player, size, org);
             if args.iter().any(|a| a == "--ascii") {
@@ -326,9 +328,7 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
             let path = format!("{}/{:03}.png", outdir, written);
             cv.write_png(&path)?;
             let (lit, tb) = cv.bright_bbox(200);
-            let nl = cv
-                .wrap(&font, text, size, frame_width(frame.as_ref()) - 2.0 * INSET_X)
-                .len();
+            let nl: usize = lay.pages.iter().map(|p| p.rows.len()).sum();
             println!(
                 "  {:03} 亮像素={:<6} 文字bbox={:?} 行数={}  {}",
                 written,
@@ -380,10 +380,6 @@ impl kzn::render::ImageSource for Assets {
 }
 
 /// 文本框内边距（像素）：552×152 的框里留 26 边、18 顶。
-const INSET_X: f32 = 26.0;
-const INSET_Y: f32 = 18.0;
-/// 行高 = 24px 字号 × 1.25。四行正好 120，加两倍 16 的上下边 = 152。
-const LINE_H: f32 = 30.0;
 
 /// 把当前打开的选择窗口画到画面上（文字直接贴，没有底色——引擎里窗口面是透明的）。
 /// 选项窗口的绘制。位置规则照抄 FUN_00418990：
@@ -446,10 +442,6 @@ fn only_at_hint(args: &[String]) -> Option<usize> {
         .and_then(|s| s.parse::<usize>().ok())
 }
 
-fn frame_width(frame: Option<&ggd::Image>) -> f32 {
-    frame.map(|f| f.width as f32).unwrap_or(552.0)
-}
-
 /// 消息窗口（FWIN2.GG2，552x152）在屏幕上的左上角。
 fn frame_origin(cv: &Canvas, frame: Option<&ggd::Image>) -> (i32, i32) {
     let (fw, fh) = match frame {
@@ -465,9 +457,9 @@ fn draw_message(
     font: &fontdue::Font,
     frame: Option<&ggd::Image>,
     _speaker: Option<u8>,
-    text: &str,
-    size: f32,
-) {
+    raw: &[u8],
+    _size: f32,
+) -> kzn::text::Layout {
     let (fw, fh) = match frame {
         Some(f) => (f.width, f.height),
         None => (552, 152),
@@ -485,12 +477,27 @@ fn draw_message(
             }
         }
     }
-    let inner = fw as f32 - 2.0 * INSET_X;
-    let mut ty = fy as isize + INSET_Y as isize;
-    for line in cv.wrap(font, text, size, inner).iter().take(4) {
-        cv.draw_text(font, line, fx as isize + INSET_X as isize, ty, size, (255, 255, 255));
-        ty += LINE_H as isize;
+    // 几何全部来自 text 模块（引擎默认：四边 16，行距 = 字高 + 4）
+    let m = kzn::text::Metrics::window(fw as i32, fh as i32);
+    let lay = kzn::text::parse(raw, &m, |ch, sz| {
+        font.metrics(ch, sz as f32).advance_width.round().max(1.0) as i32
+    });
+    for page in &lay.pages {
+        for row in &page.rows {
+            for g in &row.glyphs {
+                let c = ((g.color >> 16) as u8, (g.color >> 8) as u8, g.color as u8);
+                cv.draw_glyph(
+                    font,
+                    g.ch,
+                    fx as isize + g.x as isize,
+                    fy as isize + (g.y - 2) as isize,
+                    g.size as f32,
+                    c,
+                );
+            }
+        }
     }
+    lay
 }
 
 fn load_script(exe: &str, arc: &str, name: &str) -> kzn::Result<isf::Script> {
@@ -551,7 +558,7 @@ fn cmd_run(args: &[String]) -> kzn::Result<()> {
     }
     let mut shown = 0;
     for e in &vm.events {
-        if let isf::Event::Text { speaker, text, voice } = e {
+        if let isf::Event::Text { speaker, text, voice, .. } = e {
             if shown >= 15 {
                 break;
             }
@@ -829,7 +836,7 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
         for ev in &vm.events {
             match ev {
-                isf::Event::Text { speaker, text, voice } => {
+                isf::Event::Text { speaker, text, voice, .. } => {
                     let who = speaker.map(|s| format!("S{}", s)).unwrap_or_else(|| "-".into());
                     writeln!(f, "[TEXT] {:<3} {:<10} {}", who, voice.clone().unwrap_or_else(|| "-".into()), text.replace('\n', "\\n"))?;
                 }
@@ -989,5 +996,55 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
     }
     println!();
     println!("TOTAL steps={} texts={}", total_steps, total_text);
+    Ok(())
+}
+
+/// `kzn text`：把台词的排版结果打出来（位置/分屏/等待次数）。
+fn cmd_text(args: &[String]) -> kzn::Result<()> {
+    use kzn::text::{default_measure, parse, Metrics};
+    if args.len() < 3 {
+        usage();
+    }
+    let dir = &args[0];
+    let script_name = &args[1];
+    let want = flag(args, "--lines", 20) as usize;
+    let steps = flag(args, "--steps", 2_000_000);
+    let exe_path = format!("{}/KIZUNAR.EXE", dir);
+    let arc_path = format!("{}/ISF", dir);
+    let script = load_script(&exe_path, &arc_path, script_name)?;
+    let mods = load_modules(&exe_path, &arc_path)?;
+    let mut vm = isf::Vm::new(&script, steps).with_modules(mods, &stem_of(script_name));
+    let _ = vm.run();
+    let m = Metrics::default();
+    let mut n = 0usize;
+    let mut total_waits = 0usize;
+    let mut max_rows = 0usize;
+    for e in &vm.events {
+        if let isf::Event::Text { speaker, raw, .. } = e {
+            n += 1;
+            let l = parse(raw, &m, default_measure);
+            total_waits += l.waits;
+            let rows: usize = l.pages.iter().map(|p| p.rows.len()).sum();
+            max_rows = max_rows.max(rows);
+            println!(
+                "[{:03}] 说话人 {:?} 字号 {} 屏 {} 行 {} 等待 {} 颜色 {:06X}/{:06X}/{:06X}{}",
+                n, speaker, l.size, l.pages.len(), rows, l.waits,
+                l.colors[0], l.colors[1], l.colors[2],
+                if l.name.is_empty() { String::new() } else { format!(" 名字「{}」", l.name) }
+            );
+            for (pi, p) in l.pages.iter().enumerate() {
+                for r in &p.rows {
+                    println!("   p{} y={:<3} x={:<3} {}", pi, r.y, r.x, r.text);
+                }
+                if p.wait {
+                    println!("   p{} —— 等待点击", pi);
+                }
+            }
+            if n >= want {
+                break;
+            }
+        }
+    }
+    println!("共 {} 句，等待 {} 次，单句最多 {} 行", n, total_waits, max_rows);
     Ok(())
 }
