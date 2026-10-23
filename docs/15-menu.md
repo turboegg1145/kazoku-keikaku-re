@@ -106,6 +106,6 @@ iOS 上没法照抄 Win32 属性页，现在的做法是：只保留引擎侧真
 ## 6. 还没做的
 
 - `物置` 里 `BGMLOAD` / `TCG` 之后的二级菜单（CG / BGM / SE 切换）。
-- `0xF3` 的 MPEG（`DOLOGO.MPG` 开机 logo、`FAM_OP.MPG` 片头）。iOS 的 AVFoundation
-  不认 MPEG-1，要还原得在打包时转成 H.264。
+- `0xF3` 的 MPEG 已经能播（自带 pl_mpeg，见 [16-video.md](16-video.md)）；
+  但只有「画面 + 声音」，没有原版 DirectShow 的拖拽/右键菜单。
 - 「把 CG 设成壁纸」——Windows 专属，iOS 不做。

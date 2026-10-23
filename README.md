@@ -18,6 +18,7 @@
 | 软件渲染器（Rust） | ✅ **自动取真实背景** + 文本框 + 折行台词 → 640×480 PNG（`kzn shot --at N`）|
 | 台词文本导出 | ✅ 62,298 条 |
 | OGG / MPEG-1 | ✅ 标准格式 |
+| **`0xF3` 播片** | ✅ 自带 pl_mpeg 解码 MPEG-1（`DOLOGO` / `FAM_OP` / `FAM_OPHQ`），阻塞语义、可点击跳过，音频进混音器 |
 | GGD 图像（50 个成员，24bpp） | ✅ **完全解开**，操作码表从 `FUN_0040b190` 抄出 |
 | GG0 / GG2 图像（792 个成员，32bpp BGRA） | ✅ **完全解开**，操作码表从 `FUN_0040b8e0` 抄出 |
 | **存档 SAV（`KIZUNAR.SAV`）** | ✅ **完全解析**：30 项块表 + 27 格 + 位图 RLE，真实存档逐字节回环通过（`docs/06-save.md`）|
@@ -33,7 +34,7 @@
 | 字体 | ✅ Noto Sans CJK JP（原版 MS Gothic 的度量仍不同，见下）|
 | iOS | ✅ **GitHub Actions 已真编出未签名 `Kzn.ipa`**（arm64 / MinimumOSVersion 14.0 / 13.7 MB），TrollStore 直装 |
 
-已知与原版不同：字体（MS Gothic → Noto Sans CJK JP）、`0xF3` 的 MPEG 片头/片尾不播、
+已知与原版不同：字体（MS Gothic → Noto Sans CJK JP）、
 设置是 iOS 原生表单而不是 Win32 属性页。
 
 ## 文档
@@ -55,6 +56,7 @@
 - [文字窗：文本流与控制码](docs/13-text.md)
 - [存读档界面](docs/14-saveui.md)
 - [标题菜单 / 读档流程 / 原生菜单](docs/15-menu.md)
+- [播片：MPEG-1 与 pl_mpeg](docs/16-video.md)
 - [负结果与踩坑记录](notes/negative-results.md)
 
 ## iOS

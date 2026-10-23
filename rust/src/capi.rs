@@ -25,6 +25,8 @@ pub const KZN_HALT: c_int = 4;
 pub const KZN_FAILED: c_int = 5;
 /// `0xE5` 的模态对话框开着（存档 / 读档 / 设置），前端应该显示存读档界面。
 pub const KZN_DIALOG: c_int = 6;
+/// `0xF3` 的 MPEG 正在播（点一下跳过）。
+pub const KZN_MOVIE: c_int = 7;
 
 pub struct Kzn {
     assets: Assets,
@@ -211,13 +213,11 @@ pub extern "C" fn kzn_state(k: *mut Kzn) -> c_int {
         Wait::Input => KZN_INPUT,
         Wait::Choice(_) => KZN_CHOICE,
         Wait::Dialog(_) => KZN_DIALOG,
+        Wait::Movie => KZN_MOVIE,
         Wait::Halt(_) => KZN_HALT,
         Wait::Failed(_) => KZN_FAILED,
     }
 }
-
-/// 出一帧 RGBA（640×480×4）。返回写入的字节数。
-#[no_mangle]
 
 /// 打开存读档界面：`mode` 0 = 读档，1 = 存档。返回 1 表示已打开。
 #[no_mangle]
@@ -381,6 +381,8 @@ pub extern "C" fn kzn_frame(k: *mut Kzn, out: *mut u8) -> c_int {
         _ => (None, None),
     };
     let mut cv = k.composer.compose(&e.player, raw, shown);
+    // 0xF3 的片子盖在最上面（原版是 DirectShow 自己的窗口，永远在前）。
+    e.composite_movie(&mut cv);
     if let Some(s) = k.save_ui.as_ref() {
         s.draw(&mut cv, &k.composer.font);
     }

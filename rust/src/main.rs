@@ -1182,7 +1182,12 @@ fn cmd_abi(args: &[String]) -> kzn::Result<()> {
     let mut clicks = 0u32;
     let mut last = String::new();
     let mut peak = 0i16;
-    for _ in 0..frames {
+    // --skip N：第 N 帧点一下（用来验证播片能不能跳过）。
+    let skip_at = flag(args, "--skip", u64::MAX);
+    for fi in 0..frames {
+        if fi as u64 == skip_at {
+            c::kzn_click(k, 320, 240);
+        }
         c::kzn_tick(k, 16.0);
         c::kzn_pump(k, 4000);
         let n = c::kzn_audio(k, pcm.as_mut_ptr(), 1024, 44100);

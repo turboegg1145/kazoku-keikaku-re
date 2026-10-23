@@ -4,6 +4,7 @@
 //! 所以这里只做「解码成 PCM」和「按引擎的语义混音」两件事。
 //! 输出层（CoreAudio / cpal）不在这里，保持核心可移植。
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// 一段解码好的 PCM（交错排列，i16）。
@@ -133,6 +134,63 @@ impl Voice {
     }
 }
 
+/// 播片音轨（`0xF3` 的 MPEG-1 Layer II）。
+///
+/// 片子的采样率不一定是 44.1k，这里和 `Voice` 一样按输出采样率线性插值。
+/// 数据是主线程解码好塞进来的（解码器不是线程安全的）。
+pub struct MovieVoice {
+    pub rate: u32,
+    queue: VecDeque<i16>,
+    pos: f64,
+    pub volume: f32,
+}
+
+impl MovieVoice {
+    pub fn new(rate: u32) -> MovieVoice {
+        MovieVoice { rate, queue: VecDeque::new(), pos: 0.0, volume: 1.0 }
+    }
+
+    pub fn push(&mut self, samples: &[i16]) {
+        self.queue.extend(samples.iter().copied());
+        // 最多留 4 秒，防止主线程卡一下就把内存吃光。
+        let cap = self.rate as usize * 2 * 4;
+        if self.queue.len() > cap {
+            let drop = self.queue.len() - cap;
+            self.queue.drain(..drop);
+        }
+    }
+
+    fn mix_into(&mut self, out: &mut [i16], out_rate: u32, chans: usize) {
+        let step = self.rate as f64 / out_rate as f64;
+        let frames = out.len() / chans;
+        let avail = self.queue.len() / 2;
+        let mut i = 0;
+        while i < frames {
+            let f0 = self.pos.floor() as usize;
+            if f0 + 1 >= avail {
+                break;
+            }
+            let frac = (self.pos - f0 as f64) as f32;
+            for c in 0..chans.min(2) {
+                let a = self.queue[f0 * 2 + c] as f32;
+                let b = self.queue[(f0 + 1) * 2 + c] as f32;
+                let v = (a + (b - a) * frac) / 32768.0 * self.volume;
+                let cur = out[i * chans + c] as f32 / 32768.0 + v;
+                out[i * chans + c] = (cur.clamp(-1.0, 1.0) * 32767.0) as i16;
+            }
+            self.pos += step;
+            i += 1;
+        }
+        // 把已经播过的丢掉，pos 保持小数部分。
+        let drop = (self.pos.floor() as usize).saturating_sub(1);
+        if drop > 0 {
+            let n = (drop * 2).min(self.queue.len());
+            self.queue.drain(..n);
+            self.pos -= drop as f64;
+        }
+    }
+}
+
 /// 混音器：引擎只有 BGM 一路、语音一路、SE 若干路。
 #[derive(Default)]
 pub struct Mixer {
@@ -142,12 +200,31 @@ pub struct Mixer {
     pub voice: Option<Voice>,
     /// SE 声道：引擎按「槽号」管理（0x74 载入、0x75 播放、0x76 停止）。
     pub se: Vec<(i32, Voice)>,
+    /// 正在播的片子（`0xF3`）。
+    pub movie: Option<MovieVoice>,
     pub master: f32,
 }
 
 impl Mixer {
     pub fn new() -> Mixer {
         Mixer { master: 1.0, ..Default::default() }
+    }
+
+    /// 播片解码出来的 PCM 塞进来（主线程调用）。
+    pub fn push_movie(&mut self, samples: &[i16], rate: u32) {
+        match self.movie.as_mut() {
+            Some(v) if v.rate == rate => v.push(samples),
+            _ => {
+                let mut v = MovieVoice::new(rate);
+                v.push(samples);
+                self.movie = Some(v);
+            }
+        }
+    }
+
+    /// 片子放完 / 被跳过。
+    pub fn stop_movie(&mut self) {
+        self.movie = None;
     }
 
     /// 换 BGM；fade_ms > 0 时旧曲淡出、新曲淡入。
@@ -223,6 +300,9 @@ impl Mixer {
             }
         }
         for (_, v) in self.se.iter_mut() {
+            v.mix_into(&mut out, out_rate, chans);
+        }
+        if let Some(v) = self.movie.as_mut() {
             v.mix_into(&mut out, out_rate, chans);
         }
         self.se.retain(|(_, v)| !v.done);

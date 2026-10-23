@@ -16,7 +16,8 @@ enum {
   KZN_HALT = 4,
   KZN_FAILED = 5,
   // 0xE5 的模态对话框开着（存档 / 读档 / 设置）
-  KZN_DIALOG = 6
+  KZN_DIALOG = 6,
+  KZN_MOVIE = 7
 };
 
 typedef struct Kzn Kzn;

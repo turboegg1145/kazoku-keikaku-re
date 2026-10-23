@@ -1632,6 +1632,12 @@ impl Vm {
                 let name = self.take_str(end);
                 self.code = end;
                 self.events.push(Event::Movie { x, y, w, h, name });
+                // 原版 FUN_0043D890 建 DirectShow 图之后会在这里等 EC_COMPLETE
+                // （SNR02 播完 OP 紧接着 0x01 SNR03，不阻塞就会盖着 OP 演下一章）。
+                if self.block_on_input {
+                    self.block_requested = true;
+                    return Ok(true);
+                }
                 Ok(false)
             }
             0xF8 => {

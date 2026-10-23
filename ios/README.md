@@ -80,7 +80,6 @@ Documents/
 
 ## 现在的限制
 
-- `0xF3` 的 MPEG 片头（`DOLOGO.MPG`）和 OP（`FAM_OP.MPG`）**不播**：iOS 的
-  AVFoundation 解不了 MPEG-1，需要在打包时转码，还没做。
+- `0xF3` 的 MPEG 走自带解码器（pl_mpeg 编进 `libkzn.a`），不依赖 AVFoundation。
 - 设置是 iOS 原生表单（音量 / 文字速度），不是 Win32 属性页；壁纸功能没做。
 - 原版右键菜单里的「既読スキップ」等项，改成了 ☰ 菜单里的按钮。

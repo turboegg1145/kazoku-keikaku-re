@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::audio::{decode_ogg, Mixer, Track};
 use crate::isf::{Event, Halt, Host, Vm};
 use crate::render::{Canvas, ImageSource, Player};
+use crate::video::Movie;
 
 /// 每帧最多执行多少条指令。脚本里的等待是「循环轮询」，必须有上限兜底。
 pub const STEP_BUDGET: usize = 20_000;
@@ -148,6 +149,8 @@ pub enum Wait {
     Choice(usize),
     /// `0xE5` 的模态对话框开着：0 = 存档，1 = 读档，2.. = 设置。
     Dialog(u8),
+    /// `0xF3` 的 MPEG 正在播（阻塞，放完或点一下跳过）。
+    Movie,
     /// 脚本结束。
     Halt(Halt),
     /// VM 内部错误（长度/越界/标签）。
@@ -189,6 +192,10 @@ pub struct Engine {
     pub idle: u32,
     /// `0xE5` 打开的模态对话框（模式号）；None = 没有。
     pub dialog: Option<u8>,
+    /// 游戏目录（`0xF3` 从这里找 .MPG）。
+    pub dir: Option<String>,
+    /// 正在播的 MPEG（`0xF3`）。
+    pub movie: Option<Movie>,
 }
 
 impl Engine {
@@ -220,12 +227,15 @@ impl Engine {
             volume: 1.0,
             idle: 0,
             dialog: None,
+            dir: None,
+            movie: None,
         }
     }
 
     /// 指定游戏目录：`0x48` 会从这里读写 `KIZUNAR.SAV`（原版就是游戏目录下的文件）。
     pub fn with_dir(mut self, dir: &str) -> Engine {
         self.vm.host = Box::new(EngineHost { st: self.st.clone(), dir: Some(dir.to_string()) });
+        self.dir = Some(dir.to_string());
         self
     }
 
@@ -234,6 +244,23 @@ impl Engine {
         self.clock += dt_ms;
         self.st.borrow_mut().clock = self.clock as i32;
         self.player.tick(dt_ms);
+        // 0xF3 的片子用自己的时钟走，音频顺手交给混音器；放完就解除阻塞。
+        if self.movie.is_some() {
+            let mut pcm: Vec<i16> = Vec::new();
+            let mut rate = 44100u32;
+            let mut ended = false;
+            if let Some(m) = self.movie.as_mut() {
+                m.advance(dt_ms / 1000.0, &mut pcm);
+                rate = m.rate;
+                ended = m.ended;
+            }
+            if !pcm.is_empty() {
+                self.mixer.push_movie(&pcm, rate);
+            }
+            if ended {
+                self.finish_movie();
+            }
+        }
         if let Wait::Text = self.wait {
             if let Some(l) = self.line.as_mut() {
                 l.shown += self.speed * (dt_ms as f32) / 1000.0;
@@ -247,6 +274,10 @@ impl Engine {
 
     /// VM 阻塞时该报哪种等待。
     fn blocked_wait(&self) -> Wait {
+        // 播片优先：0xF3 是阻塞的，片子没放完脚本不能动。
+        if self.movie.is_some() {
+            return Wait::Movie;
+        }
         // 模态对话框优先：它开着的时候脚本一定停在 0xE5 上。
         if let Some(m) = self.dialog {
             return Wait::Dialog(m);
@@ -267,6 +298,11 @@ impl Engine {
     /// 跑一帧：最多 `budget` 条指令，遇到阻塞就停。
     pub fn pump(&mut self, src: &dyn ImageSource, media: &dyn AudioSource, budget: usize) {
         if let Wait::Halt(_) = self.wait {
+            return;
+        }
+        // 播片期间脚本停住（原版在等 DirectShow 的 EC_COMPLETE）。
+        if self.movie.is_some() {
+            self.wait = Wait::Movie;
             return;
         }
         // 对话框是模态的：原版 DoModal 期间脚本线程不动，这里也一样。
@@ -390,6 +426,21 @@ impl Engine {
                 Event::SysDialog(m) => {
                     self.dialog = Some(*m);
                 }
+                // `0xF3`：播 MPEG（文件在游戏目录下，不在归档里）。
+                Event::Movie { x, y, w, h, name } => {
+                    let path = match self.dir.as_deref() {
+                        Some(d) => format!("{}/{}", d.trim_end_matches(['/', '\\']), name),
+                        None => name.clone(),
+                    };
+                    match Movie::open(&path, *x, *y, *w, *h) {
+                        Some(m) => {
+                            self.movie = Some(m);
+                            self.wait = Wait::Movie;
+                        }
+                        // 文件不在就当没有这段，别把脚本卡死。
+                        None => self.vm.unblock(),
+                    }
+                }
                 Event::ChoiceOpen { window, count, .. } => {
                     self.choices += 1;
                     self.player.apply(&ev, src);
@@ -447,6 +498,7 @@ impl Engine {
     /// 和 `0x01` 一样是干净切换：清返回栈、模块栈，从 TITLE 第一条开始跑。
     pub fn goto_title(&mut self) {
         self.line = None;
+        self.movie = None;
         self.player.choices.clear();
         self.halt = None;
         self.dialog = None;
@@ -463,6 +515,7 @@ impl Engine {
     ///
     /// `reload` = false 是取消或存档完成：补一次 `FUN_00434EB0`，脚本接着往下跑。
     pub fn close_dialog(&mut self, reload: bool) {
+        self.movie = None;
         if self.dialog.take().is_none() {
             return;
         }
@@ -477,12 +530,34 @@ impl Engine {
         }
     }
 
+    /// 片子放完 / 被跳过：清掉画面，放脚本继续跑。
+    pub fn finish_movie(&mut self) {
+        if self.movie.take().is_some() {
+            self.mixer.stop_movie();
+            self.vm.unblock();
+            self.wait = self.blocked_wait();
+        }
+    }
+
+    /// 把正在播的片子贴到画布上（`kzn_frame` 用）。
+    pub fn composite_movie(&self, cv: &mut Canvas) {
+        if let Some(m) = self.movie.as_ref() {
+            m.blit(cv);
+        }
+    }
+
     /// 玩家点了一下。返回是否被消费。
     pub fn click(&mut self, x: i32, y: i32, src: &dyn ImageSource, media: &dyn AudioSource) -> bool {
         {
             let mut s = self.st.borrow_mut();
             s.mouse = (x, y);
             s.clicked = true;
+        }
+        // 播片时点一下 = 跳过（原版那个 DirectShow 窗口点一下就关）。
+        if self.movie.is_some() {
+            self.finish_movie();
+            self.pump(src, media, STEP_BUDGET);
+            return true;
         }
         match self.wait.clone() {
             Wait::Text => {
