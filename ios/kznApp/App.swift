@@ -40,7 +40,8 @@ struct MenuBar: View {
             }
         }
         .font(.system(size: 15, weight: .semibold))
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(BorderlessButtonStyle())
+        .foregroundColor(.white)
         .padding(10)
         .background(Color.black.opacity(0.45))
         .clipShape(RoundedRectangle(cornerRadius: 10))
