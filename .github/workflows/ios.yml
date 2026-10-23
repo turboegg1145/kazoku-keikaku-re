@@ -1,0 +1,49 @@
+name: iOS
+
+on:
+  push:
+    paths:
+      - "rust/**"
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: 编译引擎（静态库）
+        run: cargo build --release --target aarch64-apple-ios --manifest-path rust/Cargo.toml
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: 构建 App（不签名）
+        working-directory: ios
+        run: |
+          xcodebuild -project Kzn.xcodeproj -scheme Kzn -configuration Release \
+            -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+
+      - name: 打包 ipa（TrollStore 用）
+        working-directory: ios
+        run: |
+          mkdir -p out/Payload
+          cp -R build/Build/Products/Release-iphoneos/Kzn.app out/Payload/
+          cd out && zip -qry Kzn.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kzn-ipa
+          path: ios/out/Kzn.ipa

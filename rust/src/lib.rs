@@ -6,7 +6,10 @@
 //! - `ggd`：GGD（24bpp）/ GG0、GG2（32bpp）图像解码
 //! - `isf`：ISF 脚本解密 + 虚拟机
 
+pub mod assets;
 pub mod audio;
+pub mod capi;
+pub mod compose;
 pub mod engine;
 pub mod ggd;
 pub mod render;

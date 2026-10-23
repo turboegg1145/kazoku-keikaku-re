@@ -1,0 +1,40 @@
+name: Kzn
+options:
+  bundleIdPrefix: com.kazoku
+  deploymentTarget:
+    iOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGN_IDENTITY: ""
+    ENABLE_BITCODE: NO
+
+targets:
+  Kzn:
+    type: application
+    platform: iOS
+    sources:
+      - path: kznApp
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kazoku.kzn
+        INFOPLIST_FILE: kznApp/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: kznApp/kzn-Bridging-Header.h
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../rust/target/aarch64-apple-ios/release
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -lkzn
+        TARGETED_DEVICE_FAMILY: "1,2"
+    dependencies:
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: AVFoundation.framework

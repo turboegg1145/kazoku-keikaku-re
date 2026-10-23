@@ -7,7 +7,7 @@
 //! kzn dump  <KIZUNAR.EXE> <ISF归档> <输出目录> [--steps N]
 //! ```
 
-use kzn::render::{Canvas, ImageSource};
+use kzn::render::Canvas;
 use kzn::{ggd, isf, sav, sm2mpx};
 use std::io::Write;
 
@@ -21,6 +21,7 @@ fn usage() -> ! {
     eprintln!("  kzn dump  <KIZUNAR.EXE> <ISF归档> <输出目录> [--steps N]");
     eprintln!("  kzn sav   <KIZUNAR.SAV> [--roundtrip]");
     eprintln!("  kzn text  <游戏目录> <脚本名> [--lines N]   台词排版（位置/分屏/等待）");
+    eprintln!("  kzn abi   <游戏目录> <脚本名> [--frames N]  走 C ABI 跑一段（iOS 同款路径）");
     std::process::exit(2);
 }
 
@@ -88,6 +89,7 @@ fn main() {
         "play" => cmd_play(&args[1..]),
         "mask" => cmd_mask(&args[1..]),
         "text" => cmd_text(&args[1..]),
+        "abi" => cmd_abi(&args[1..]),
         _ => usage(),
     };
     if let Err(e) = rc {
@@ -226,17 +228,9 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
         .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
 
     let font_data = std::fs::read(&font_path)?;
-    let font = fontdue::Font::from_bytes(font_data.as_slice(), fontdue::FontSettings::default())
-        .map_err(|e| kzn::Error(format!("字体加载失败 {}: {}", font_path, e)))?;
-
-    let assets = Assets {
-        ggd: sm2mpx::Archive::open(&format!("{}/GGD", dir))?,
-        ggd2: sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok(),
-        data: sm2mpx::Archive::open(&format!("{}/DATA", dir)).ok(),
-    };
-    // 窗框：GGD 里的 FWIN.GG2（552×152 的黑色圆角框，带外发光）
+    let assets = kzn::assets::Assets::open(dir, false)?;
     // 窗框：FWIN2.GG2 是 60% 不透明的黑色圆角框（对话用），FWIN.GG2 是全黑版（菜单用）
-    let frame = assets.image("FWIN2.GG2").or_else(|| assets.image("FWIN.GG2"));
+    let composer = kzn::compose::Composer::from_bytes(font_data, size, &assets)?;
 
     let exe_path = format!("{}/KIZUNAR.EXE", dir);
     let arc_path = format!("{}/ISF", dir);
@@ -299,12 +293,7 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     for (i, ev) in vm.events.iter().enumerate() {
         if Some(i) == shot_at {
             player.apply(ev, &assets);
-            let mut cv = player.frame();
-            let org = frame_origin(&cv, frame.as_ref());
-            if let Some(f) = frame.as_ref() {
-                cv.blit(f, org.0 as isize, org.1 as isize);
-            }
-            draw_choices(&mut cv, &font, &player, size, org);
+            let cv = composer.compose(&player, None, None);
             if args.iter().any(|a| a == "--ascii") {
                 println!("{}", cv.ascii(78, 26));
             }
@@ -314,21 +303,23 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
             written += 1;
             continue;
         }
-        if let isf::Event::Text { speaker, text, raw, .. } = ev {
+        if let isf::Event::Text { text, raw, .. } = ev {
             if !pick.contains(&i) {
                 continue;
             }
-            let mut cv = player.frame();
-            let lay = draw_message(&mut cv, &font, frame.as_ref(), *speaker, raw, size);
-            let org = frame_origin(&cv, frame.as_ref());
-            draw_choices(&mut cv, &font, &player, size, org);
+            let cv = composer.compose(&player, Some(raw), None);
             if args.iter().any(|a| a == "--ascii") {
                 println!("{}", cv.ascii(78, 26));
             }
             let path = format!("{}/{:03}.png", outdir, written);
             cv.write_png(&path)?;
             let (lit, tb) = cv.bright_bbox(200);
-            let nl: usize = lay.pages.iter().map(|p| p.rows.len()).sum();
+            let nl: usize = composer
+                .layout(raw, &kzn::text::Metrics::default())
+                .pages
+                .iter()
+                .map(|p| p.rows.len())
+                .sum();
             println!(
                 "  {:03} 亮像素={:<6} 文字bbox={:?} 行数={}  {}",
                 written,
@@ -354,150 +345,12 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     Ok(())
 }
 
-/// 图片源：GGD（.GG0）与 GGD2（.GG2）。
-struct Assets {
-    ggd: sm2mpx::Archive,
-    ggd2: Option<sm2mpx::Archive>,
-    /// DATA 归档（特效蒙版 EFF*/SEF*.BIN）。
-    data: Option<sm2mpx::Archive>,
-}
-
-impl kzn::render::ImageSource for Assets {
-    fn data(&self, name: &str) -> Option<Vec<u8>> {
-        let a = self.data.as_ref()?;
-        let e = a.find(name).or_else(|| a.find_stem(name))?;
-        a.bytes(e).ok()
-    }
-
-    fn image(&self, name: &str) -> Option<ggd::Image> {
-        for arc in [Some(&self.ggd), self.ggd2.as_ref()].into_iter().flatten() {
-            if let Some(e) = arc.find(name).or_else(|| arc.find_stem(name)) {
-                return arc.bytes(e).ok().and_then(|b| ggd::decode(&b).ok());
-            }
-        }
-        None
-    }
-}
-
-/// 文本框内边距（像素）：552×152 的框里留 26 边、18 顶。
-
-/// 把当前打开的选择窗口画到画面上（文字直接贴，没有底色——引擎里窗口面是透明的）。
-/// 选项窗口的绘制。位置规则照抄 FUN_00418990：
-///   默认      → 左上角 = 矩形左上角
-///   flags&4   → x=(right-tw/2+left)/2, y=(bottom-fh+top)/2（引擎原式，含它那个 tw/4 偏移）
-///   flags&8   → 右对齐到窗口宽-0x1e
-fn draw_choices(
-    cv: &mut Canvas,
-    font: &fontdue::Font,
-    p: &kzn::render::Player,
-    size: f32,
-    origin: (i32, i32),
-) {
-    const CELL: i32 = 16; // 引擎 +0x38：选项字体高/宽（等宽 16px）
-    for w in p.choices.iter() {
-        if w.open == 0 {
-            continue;
-        }
-        // 子窗口 surface 没有 alpha 通道：FUN_004082D0(surf,0,0,0) 会把 0 色二次填成白色，
-        // 所以开窗时是一整块白底（同尺寸、同位置盖住消息窗口）。
-        cv.fill_rect(origin.0, origin.1, w.width, w.height, 255, 255, 255, 255);
-        for i in 0..w.open as usize {
-            let Some((left, top, rw, rh, text)) = w.text_at(i) else { continue };
-            let n = text.chars().count() as i32;
-            let tw = n * CELL;
-            let right = left + rw;
-            let bottom = top + rh;
-            let (tx, ty) = if w.flags & 4 != 0 {
-                ((right - tw / 2 + left) / 2, (bottom - CELL + top) / 2)
-            } else if w.flags & 8 != 0 {
-                (w.width - 0x1e - tw, top)
-            } else {
-                (left, top)
-            };
-            // 1px 50% 黑投影，再画正文（引擎 FUN_004092A0 的 param_8 分支）
-            cv.draw_text(
-                font,
-                text,
-                (origin.0 + tx + 1) as isize,
-                (origin.1 + ty + 1) as isize,
-                size,
-                (128, 128, 128),
-            );
-            cv.draw_text(
-                font,
-                text,
-                (origin.0 + tx) as isize,
-                (origin.1 + ty) as isize,
-                size,
-                (0, 0, 0),
-            );
-        }
-    }
-}
 
 fn only_at_hint(args: &[String]) -> Option<usize> {
     args.iter()
         .position(|a| a == "--at")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse::<usize>().ok())
-}
-
-/// 消息窗口（FWIN2.GG2，552x152）在屏幕上的左上角。
-fn frame_origin(cv: &Canvas, frame: Option<&ggd::Image>) -> (i32, i32) {
-    let (fw, fh) = match frame {
-        Some(f) => (f.width as i32, f.height as i32),
-        None => (552, 152),
-    };
-    ((cv.width as i32 - fw) / 2, cv.height as i32 - fh - 8)
-}
-
-/// 把窗框（FWIN2.GG2，60% 黑圆角框）和台词贴到画面上。
-fn draw_message(
-    cv: &mut Canvas,
-    font: &fontdue::Font,
-    frame: Option<&ggd::Image>,
-    _speaker: Option<u8>,
-    raw: &[u8],
-    _size: f32,
-) -> kzn::text::Layout {
-    let (fw, fh) = match frame {
-        Some(f) => (f.width, f.height),
-        None => (552, 152),
-    };
-    let fx = (cv.width - fw) / 2;
-    let fy = cv.height - fh - 8;
-    match frame {
-        Some(f) => cv.blit(f, fx as isize, fy as isize),
-        None => {
-            // 没有窗框时退化成半透明黑框，方便单独调文本排版
-            for y in fy..fy + fh {
-                for x in fx..fx + fw {
-                    cv.blend(x, y, 0, 0, 0, 153);
-                }
-            }
-        }
-    }
-    // 几何全部来自 text 模块（引擎默认：四边 16，行距 = 字高 + 4）
-    let m = kzn::text::Metrics::window(fw as i32, fh as i32);
-    let lay = kzn::text::parse(raw, &m, |ch, sz| {
-        font.metrics(ch, sz as f32).advance_width.round().max(1.0) as i32
-    });
-    for page in &lay.pages {
-        for row in &page.rows {
-            for g in &row.glyphs {
-                let c = ((g.color >> 16) as u8, (g.color >> 8) as u8, g.color as u8);
-                cv.draw_glyph(
-                    font,
-                    g.ch,
-                    fx as isize + g.x as isize,
-                    fy as isize + (g.y - 2) as isize,
-                    g.size as f32,
-                    c,
-                );
-            }
-        }
-    }
-    lay
 }
 
 fn load_script(exe: &str, arc: &str, name: &str) -> kzn::Result<isf::Script> {
@@ -609,42 +462,6 @@ fn cmd_audio(args: &[String]) -> kzn::Result<()> {
     Ok(())
 }
 
-/// 音频资源：把各归档按名字查出来。
-struct Media {
-    wmsc: Option<sm2mpx::Archive>,
-    se: Option<sm2mpx::Archive>,
-    voice1: Option<sm2mpx::Archive>,
-    voice2: Option<sm2mpx::Archive>,
-}
-
-impl Media {
-    fn open(dir: &str, enable: bool) -> Media {
-        if !enable {
-            return Media { wmsc: None, se: None, voice1: None, voice2: None };
-        }
-        let o = |n: &str| sm2mpx::Archive::open(&format!("{}/{}", dir, n)).ok();
-        Media { wmsc: o("WMSC"), se: o("SE"), voice1: o("VOICE1"), voice2: o("VOICE2") }
-    }
-
-    fn arc(&self, name: &str) -> Option<&sm2mpx::Archive> {
-        match name {
-            "WMSC" => self.wmsc.as_ref(),
-            "SE" => self.se.as_ref(),
-            "VOICE1" => self.voice1.as_ref(),
-            "VOICE2" => self.voice2.as_ref(),
-            _ => None,
-        }
-    }
-}
-
-impl kzn::engine::AudioSource for Media {
-    fn ogg(&self, archive: &str, name: &str) -> Option<Vec<u8>> {
-        let a = self.arc(archive)?;
-        let e = a.find(name).or_else(|| a.find_stem(name))?;
-        a.bytes(e).ok()
-    }
-}
-
 /// `kzn play <目录> <剧本> [--lines N] [--steps N] [--no-audio] [--budget N]`
 ///
 /// 无人值守跑一遍：台词全部瞬间显示、选项永远选第 0 项。
@@ -707,12 +524,7 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
     let audio = !args.iter().any(|a| a == "--no-audio");
     let verbose = !args.iter().any(|a| a == "--quiet");
 
-    let assets = Assets {
-        ggd: sm2mpx::Archive::open(&format!("{}/GGD", dir))?,
-        ggd2: sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok(),
-        data: sm2mpx::Archive::open(&format!("{}/DATA", dir)).ok(),
-    };
-    let media = Media::open(dir, audio);
+    let assets = kzn::assets::Assets::open(dir, audio)?;
 
     let exe_path = format!("{}/KIZUNAR.EXE", dir);
     let arc_path = format!("{}/ISF", dir);
@@ -721,7 +533,7 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
     let vm = isf::Vm::new(&script, steps).with_modules(mods, &stem_of(script_name));
 
     let mut eng = kzn::engine::Engine::new(vm);
-    eng.pump(&assets, &media, budget);
+    eng.pump(&assets, &assets, budget);
 
     let mut printed = 0usize;
     let mut shown_choices = 0usize;
@@ -747,7 +559,7 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
             println!("-- 已跑 {} 句台词，主动停", eng.lines);
             break;
         }
-        if !eng.auto_advance(&assets, &media) {
+        if !eng.auto_advance(&assets, &assets) {
             break;
         }
         if args.iter().any(|a| a == "--trace") && frames % 20 == 0 {
@@ -1046,5 +858,88 @@ fn cmd_text(args: &[String]) -> kzn::Result<()> {
         }
     }
     println!("共 {} 句，等待 {} 次，单句最多 {} 行", n, total_waits, max_rows);
+    Ok(())
+}
+
+/// `kzn abi <目录> <剧本> [--frames N] [--font 路径] [--out 文件]`
+///
+/// 完全走 C ABI（iOS 端就是这条路径）跑一段，验证接口可用。
+fn cmd_abi(args: &[String]) -> kzn::Result<()> {
+    use kzn::capi as c;
+    use std::ffi::CString;
+    if args.len() < 2 {
+        usage();
+    }
+    let dir = CString::new(args[0].as_str()).map_err(|_| kzn::Error("目录里有 NUL".into()))?;
+    let script = CString::new(args[1].as_str()).map_err(|_| kzn::Error("名字里有 NUL".into()))?;
+    let font_path = args
+        .iter()
+        .position(|a| a == "--font")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
+    let font = CString::new(font_path).map_err(|_| kzn::Error("字体路径有 NUL".into()))?;
+    let frames = flag(args, "--frames", 600) as usize;
+    let out = args
+        .iter()
+        .position(|a| a == "--out")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "/tmp/kzn_abi.png".to_string());
+
+    let k = c::kzn_open(dir.as_ptr(), 1, font.as_ptr());
+    if k.is_null() {
+        return Err(kzn::Error("kzn_open 失败（目录/字体/归档）".into()));
+    }
+    if c::kzn_start(k, script.as_ptr()) != 0 {
+        let mut buf = vec![0u8; 512];
+        c::kzn_error(k, buf.as_mut_ptr() as *mut _, buf.len() as i32);
+        let msg = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
+        c::kzn_free(k);
+        return Err(kzn::Error(format!("kzn_start 失败: {}", msg)));
+    }
+
+    let mut rgba = vec![0u8; 640 * 480 * 4];
+    let mut pcm = vec![0i16; 2048];
+    let mut clicks = 0u32;
+    let mut last = String::new();
+    let mut peak = 0i16;
+    for _ in 0..frames {
+        c::kzn_tick(k, 16.0);
+        c::kzn_pump(k, 4000);
+        let n = c::kzn_audio(k, pcm.as_mut_ptr(), 1024, 44100);
+        for &s in &pcm[..n.max(0) as usize] {
+            peak = peak.max(s.abs());
+        }
+        match c::kzn_state(k) {
+            c::KZN_CHOICE => {
+                let mut r = [0i32; 4];
+                if c::kzn_choice_rect(k, 0, 0, r.as_mut_ptr()) == 1 {
+                    c::kzn_click(k, r[0] + r[2] / 2, r[1] + r[3] / 2);
+                    clicks += 1;
+                }
+            }
+            c::KZN_TEXT | c::KZN_INPUT => {
+                c::kzn_click(k, 300, 400);
+                clicks += 1;
+            }
+            c::KZN_HALT | c::KZN_FAILED => break,
+            _ => {}
+        }
+        let mut tb = vec![0u8; 4096];
+        let n = c::kzn_text(k, tb.as_mut_ptr() as *mut _, tb.len() as i32);
+        if n > 0 {
+            last = String::from_utf8_lossy(&tb[..n as usize]).to_string();
+        }
+    }
+    let n = c::kzn_frame(k, rgba.as_mut_ptr());
+    let mut cv = Canvas::new(640, 480);
+    cv.pixels.copy_from_slice(&rgba[..n as usize]);
+    cv.write_png(&out)?;
+    let (lit, bbox) = cv.bright_bbox(200);
+    println!("ABI 跑完 {} 帧：状态 {}，点击 {} 次，音频峰值 {}", frames, c::kzn_state(k), clicks, peak);
+    println!("  最后一句话: {}", last);
+    println!("  帧 -> {}（亮像素 {}，bbox {:?}）", out, lit, bbox);
+    c::kzn_free(k);
     Ok(())
 }

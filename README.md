@@ -46,6 +46,15 @@
 - [文字窗：文本流与控制码](docs/13-text.md)
 - [负结果与踩坑记录](notes/negative-results.md)
 
+## iOS
+
+引擎编成静态库（`libkzn.a`），Swift 壳只负责 Metal 贴图、CoreAudio 出声、触摸转发：
+
+- 接口：`rust/src/capi.rs`（`kzn_open/start/tick/pump/frame/click/audio/…`），声明在 `ios/kznApp/kzn.h`
+- 壳：`ios/`（XcodeGen 工程 + GitHub Actions 出未签名 `Kzn.ipa`，TrollStore 直装）
+- 详见 [ios/README.md](ios/README.md)
+- 自检：`kzn abi <游戏目录> <剧本> --frames 600` 完全走 C ABI 跑一遍并出一张 PNG
+
 ## 工具
 
 - `tools/sm2mpx.py` — SM2MPX10 归档列表/解包

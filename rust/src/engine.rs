@@ -80,6 +80,8 @@ pub struct Line {
     pub speaker: Option<u8>,
     pub text: String,
     pub voice: Option<String>,
+    /// 原始载荷（含控制码），排版和渲染都用它。
+    pub raw: Vec<u8>,
     /// 已经显示的字符数（浮点，按时间累积）。
     pub shown: f32,
     /// 总字符数。
@@ -87,9 +89,9 @@ pub struct Line {
 }
 
 impl Line {
-    pub fn new(speaker: Option<u8>, text: String, voice: Option<String>) -> Line {
+    pub fn new(speaker: Option<u8>, text: String, voice: Option<String>, raw: Vec<u8>) -> Line {
         let total = text.chars().count();
-        Line { speaker, text, voice, shown: 0.0, total }
+        Line { speaker, text, voice, raw, shown: 0.0, total }
     }
 
     pub fn done(&self) -> bool {
@@ -277,9 +279,9 @@ impl Engine {
         let events = self.vm.drain_events();
         for ev in events {
             match &ev {
-                Event::Text { speaker, text, voice, .. } => {
+                Event::Text { speaker, text, voice, raw } => {
                     self.lines += 1;
-                    let l = Line::new(*speaker, text.clone(), voice.clone());
+                    let l = Line::new(*speaker, text.clone(), voice.clone(), raw.clone());
                     self.log.push(l.clone());
                     self.line = Some(l);
                     if let Some(v) = voice.clone() {

@@ -5,6 +5,10 @@ edition = "2021"
 description = "家族計画 ～追憶～ (GDT / Ikura GDL) 引擎的 Rust 重写"
 license = "MIT OR Apache-2.0"
 
+[lib]
+name = "kzn"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
 [dependencies]
 png = "0.18"
 encoding_rs = "0.8"
