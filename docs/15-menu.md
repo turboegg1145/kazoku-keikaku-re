@@ -93,8 +93,19 @@ PC 版本来就不存 PC。
 「回标题」= `Engine::goto_title()` = 干净切换载入 `TITLE.ISF`（不是 START，
 不走 logo）。
 
-## 5. 还没做的
+## 5. 设置
 
-- 设置对话框（`0xE5 2+`）：原版是 MFC 属性页 `CMyPropertyPage4..8`，
-  里面是文字速度、音量、窗口模式之类。脚本从不触发，属于纯原生 UI。
+原版是 MFC 属性页 `CMyPropertyPage4..8`（`プロパティシート`），存在**注册表**里
+（字符串里有 `SOFTWARE\\`、`.SUF`、`Control Panel\\Desktop`、`Wallpaper` ——
+最后两项是「把 CG 设成桌面壁纸」的功能）。`KIZUNAR.SUF` 只是启动信息 INI，不是设置。
+
+iOS 上没法照抄 Win32 属性页，现在的做法是：只保留引擎侧真正有两个旋钮——
+`kzn_set_volume`（混音器 master）和 `kzn_set_speed`（打字速度），
+用 SwiftUI 表单 + `UserDefaults` 存。**布局和原版不同**，这是已知差异。
+
+## 6. 还没做的
+
 - `物置` 里 `BGMLOAD` / `TCG` 之后的二级菜单（CG / BGM / SE 切换）。
+- `0xF3` 的 MPEG（`DOLOGO.MPG` 开机 logo、`FAM_OP.MPG` 片头）。iOS 的 AVFoundation
+  不认 MPEG-1，要还原得在打包时转成 H.264。
+- 「把 CG 设成壁纸」——Windows 专属，iOS 不做。

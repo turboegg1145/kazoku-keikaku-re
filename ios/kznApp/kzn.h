@@ -43,6 +43,12 @@ int  kzn_save_open(Kzn *k, int mode);   // mode: 0 = 读档, 1 = 存档
 void kzn_save_close(Kzn *k);
 int  kzn_save_active(Kzn *k);
 int  kzn_title(Kzn *k);               // 回标题（原版右键菜单的「タイトルに戻る」）
+
+// 设置（原版是 Win32 属性页，这里只留引擎侧的两个旋钮）
+int   kzn_set_volume(Kzn *k, float v);   // 主音量 0..1
+float kzn_volume(Kzn *k);
+int   kzn_set_speed(Kzn *k, float cps);  // 打字速度 字符/秒
+float kzn_speed(Kzn *k);
 void kzn_save_move(Kzn *k, int x, int y);
 void kzn_save_page(Kzn *k, int delta);
 

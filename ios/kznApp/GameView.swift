@@ -136,6 +136,10 @@ final class GameUIView: UIView {
             kzn_error(engine, &buf, 256)
             print("[kzn] 启动失败: \(String(cString: buf))")
         }
+        // 上次在「设置」里调的旋钮（原版存在注册表里，这里用 UserDefaults）。
+        let defaults = UserDefaults.standard
+        _ = kzn_set_volume(engine, Float(defaults.object(forKey: "kzn.volume") as? Double ?? 1.0))
+        _ = kzn_set_speed(engine, Float(defaults.object(forKey: "kzn.speed") as? Double ?? 50.0))
         audio = GameAudio()
     }
 
@@ -198,6 +202,16 @@ final class GameUIView: UIView {
     func gotoTitle() {
         guard let engine = engine else { return }
         _ = kzn_title(engine)
+    }
+
+    func setVolume(_ v: Float) {
+        guard let engine = engine else { return }
+        _ = kzn_set_volume(engine, v)
+    }
+
+    func setSpeed(_ cps: Float) {
+        guard let engine = engine else { return }
+        _ = kzn_set_speed(engine, cps)
     }
 
     func flipPage(_ delta: Int32) {

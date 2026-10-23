@@ -26,6 +26,15 @@
 | 主循环 | ✅ `engine.rs`：台词/选项阻塞、打字机、音频接线（`docs/11-engine.md`）|
 | 画面特效 | ✅ `0x60` 蒙版溶解 + `0x63` 抖动（`docs/12-effects.md`）|
 | 文字窗 | ✅ 文本流控制码全解 + 真几何排版（`docs/13-text.md`，`kzn text` 可查）|
+| 存读档界面 | ✅ 27 格 × 3 页 + 缩略图 + 日期，存档格字节与原版一致（`docs/14-saveui.md`）|
+| 标题菜单 | ✅ 四块木牌（始めから/続きから/物置/終わる）全部对上脚本分支（`docs/15-menu.md`）|
+| `0xE5` 模态对话框 | ✅ 阻塞语义 + 关窗后重置 VM 载入 `LOAD.ISF`（28 章节目录表）|
+| 鉴赏室 | ✅ `BGMLOAD`（BGM 列表）/ `CGMODE`（CG 网格）/ `SEXMODE`（场景回放）都能跑 |
+| 字体 | ✅ Noto Sans CJK JP（原版 MS Gothic 的度量仍不同，见下）|
+| iOS | ⬜ 代码齐了（Metal + CoreAudio + ☰ 菜单 + 设置），**但还没在 CI 上真编过一次** |
+
+已知与原版不同：字体（MS Gothic → Noto Sans CJK JP）、`0xF3` 的 MPEG 片头/片尾不播、
+设置是 iOS 原生表单而不是 Win32 属性页。
 
 ## 文档
 

@@ -239,6 +239,37 @@ pub extern "C" fn kzn_save_close(k: *mut Kzn) {
     }
 }
 
+/// 主音量 0..1（原版设置对话框的「音量」）。写的是混音器的 master，
+/// 脚本自己用 `0x71/0x72` 调的轨道音量是另一层，两者相乘。
+#[no_mangle]
+pub extern "C" fn kzn_set_volume(k: *mut Kzn, v: f32) -> c_int {
+    let Some(k) = (unsafe { k.as_mut() }) else { return 0 };
+    let Some(e) = k.engine.as_mut() else { return 0 };
+    e.mixer.master = v.clamp(0.0, 1.0);
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn kzn_volume(k: *mut Kzn) -> f32 {
+    let Some(k) = (unsafe { k.as_ref() }) else { return 1.0 };
+    k.engine.as_ref().map(|e| e.mixer.master).unwrap_or(1.0)
+}
+
+/// 打字速度（字符/秒，原版设置对话框的「文字速度」）。
+#[no_mangle]
+pub extern "C" fn kzn_set_speed(k: *mut Kzn, cps: f32) -> c_int {
+    let Some(k) = (unsafe { k.as_mut() }) else { return 0 };
+    let Some(e) = k.engine.as_mut() else { return 0 };
+    e.speed = cps.clamp(1.0, 400.0);
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn kzn_speed(k: *mut Kzn) -> f32 {
+    let Some(k) = (unsafe { k.as_ref() }) else { return 50.0 };
+    k.engine.as_ref().map(|e| e.speed).unwrap_or(50.0)
+}
+
 /// 回标题（原版右键菜单的「タイトルに戻る」）。
 #[no_mangle]
 pub extern "C" fn kzn_title(k: *mut Kzn) -> c_int {
