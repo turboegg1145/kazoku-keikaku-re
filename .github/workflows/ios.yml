@@ -35,7 +35,14 @@ jobs:
         run: cargo build --release --target aarch64-apple-ios --manifest-path rust/Cargo.toml
 
       - name: 安装 XcodeGen
-        run: brew install xcodegen
+        run: |
+          # 钉死 2.42.0：更新的版本会写 Xcode 16 的工程格式（objectVersion 77），
+          # runner 上的 Xcode 15.4 打不开。2.42.0 写 56，两边都认。
+          curl -L --fail --retry 3 -o /tmp/xcodegen.zip \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.42.0/xcodegen.zip
+          unzip -q -o /tmp/xcodegen.zip -d /tmp/xcg
+          echo "/tmp/xcg/xcodegen/bin" >> "$GITHUB_PATH"
+          /tmp/xcg/xcodegen/bin/xcodegen --version
 
       - name: 生成 Xcode 工程
         working-directory: ios
