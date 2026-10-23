@@ -23,6 +23,9 @@
 | **存档 SAV（`KIZUNAR.SAV`）** | ✅ **完全解析**：30 项块表 + 27 格 + 位图 RLE，真实存档逐字节回环通过（`docs/06-save.md`）|
 | 全局旗标落盘（`0x49/0x4A` ↔ 块 27/28） | ✅ 反编译确认偏移与打包方式，虚拟机直接读写这两块 |
 | 指令覆盖 | ✅ **93 / 93 条在用指令全部还原**（100% 指令次数，运行时 `unknown` 为空），见 `docs/05-opcodes-todo.md` |
+| 主循环 | ✅ `engine.rs`：台词/选项阻塞、打字机、音频接线（`docs/11-engine.md`）|
+| 画面特效 | ✅ `0x60` 蒙版溶解 + `0x63` 抖动（`docs/12-effects.md`）|
+| 文字窗 | ✅ 文本流控制码全解 + 真几何排版（`docs/13-text.md`，`kzn text` 可查）|
 
 ## 文档
 
@@ -38,6 +41,9 @@
 - [音频](docs/07-audio.md)
 - [系统功能 0x37](docs/08-sysfunc.md)
 - [选项窗口](docs/09-choice.md)
+- [主循环与阻塞](docs/11-engine.md)
+- [画面特效 0x60 / 抖动 0x63](docs/12-effects.md)
+- [文字窗：文本流与控制码](docs/13-text.md)
 - [负结果与踩坑记录](notes/negative-results.md)
 
 ## 工具
