@@ -114,19 +114,39 @@ final class GameUIView: UIView {
 
     // MARK: - 引擎
 
+    /// 候选字体，按顺序试。`#0` 是 ttc 集合里的字面号（NotoSansCJK 的 0 = JP）。
+    /// 原版用 MS Gothic（日文 + 拉丁都有），所以第一个要求是「两种字形都得有」——
+    /// DroidSansFallback 没有拉丁字形，存档界面的日期会变成方框，只能垫底。
+    private func fontCandidates() -> [String] {
+        var out: [String] = []
+        // iOS 自带的日文字体，能读到就不用打包字体。
+        for p in ["/System/Library/Fonts/Core/HiraginoSans-W3.ttc",
+                  "/System/Library/Fonts/HiraginoSans-W3.ttc"] {
+            if FileManager.default.fileExists(atPath: p) { out.append(p + "#0") }
+        }
+        if let p = Bundle.main.path(forResource: "NotoSansCJKjp-Regular", ofType: "otf") { out.append(p) }
+        if let p = Bundle.main.path(forResource: "NotoSansCJK-Regular", ofType: "ttc") { out.append(p + "#0") }
+        if let p = Bundle.main.path(forResource: "NotoSansJP-Regular", ofType: "otf") { out.append(p) }
+        if let p = Bundle.main.path(forResource: "DroidSansFallbackFull", ofType: "ttf") { out.append(p) }
+        return out
+    }
+
     private func setupEngine() {
         // TrollStore 安装后，游戏数据放 Documents（用文件 App / AFC 拷进去）。
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
-        // 优先用带拉丁字形的字体（原版 MS Gothic 数字/字母都有）。
-        // `#0` 是 ttc 集合里的字面号，NotoSansCJK 的 0 = JP。
-        let font = Bundle.main.path(forResource: "NotoSansCJK-Regular", ofType: "ttc").map { $0 + "#0" }
-            ?? Bundle.main.path(forResource: "NotoSansJP-Regular", ofType: "otf")
-            ?? Bundle.main.path(forResource: "DroidSansFallbackFull", ofType: "ttf")
-        guard let font = font else {
+        let fonts = fontCandidates()
+        guard !fonts.isEmpty else {
             print("[kzn] 找不到字体资源")
             return
         }
-        engine = kzn_open(docs, 1, font)
+        // 逐个试：kzn_open 在字体解析失败时返回 null，换下一个。
+        for f in fonts {
+            if let e = f.withCString({ kzn_open(docs, 1, $0) }) {
+                engine = e
+                break
+            }
+            print("[kzn] 字体加载失败，换下一个: \(f)")
+        }
         guard let engine = engine else {
             print("[kzn] 打不开游戏目录: \(docs)")
             return
