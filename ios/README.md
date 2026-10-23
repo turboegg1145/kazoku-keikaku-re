@@ -60,7 +60,19 @@ CI 里有两个坑已经钉死，别随手改：
 2. TrollStore → `+` → 选 ipa → 安装（TrollStore 会自己 ldid 签名，不用开发者证书）。
 3. 打开一次 App，让它建出 Documents 目录（第一次会是黑屏/报错，正常）。
 
-## 放游戏数据
+## 完整版（装完直接能玩）
+
+不想手动拷 1 GB 的话，在 Windows 上：
+
+1. 把 Release 里的 `Kzn.ipa` 放到仓库根目录
+2. 把游戏文件夹（有 `KIZUNAR.EXE` 的那个）**拖到 `打包完整版.bat` 上**
+
+脚本会把 `GGD GGD2 DATA ISF SE VOICE1 VOICE2 WMSC KIZUNAR.EXE KIZUNAR.SAV *.MPG`
+塞进 `Payload/Kzn.app/gamedata/`，重打成 `Kzn-完整版.ipa`（约 800 MB）。
+App 启动时会在 Documents 里给这些文件建**符号链接**（`KIZUNAR.SAV` 真拷一份，
+因为存档要可写），所以引擎的读取路径完全不变，也不占双份空间。
+
+## 放游戏数据（手动）
 
 App 从 **Documents 目录**读游戏文件（`Info.plist` 开了 `UIFileSharingEnabled` 和
 `LSSupportsOpeningDocumentsInPlace`，所以「文件」App 里能看到 `Kzn` 文件夹，
