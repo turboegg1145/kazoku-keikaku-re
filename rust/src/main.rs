@@ -85,6 +85,7 @@ fn main() {
         "sav" => cmd_sav(&args[1..]),
         "audio" => cmd_audio(&args[1..]),
         "play" => cmd_play(&args[1..]),
+        "mask" => cmd_mask(&args[1..]),
         _ => usage(),
     };
     if let Err(e) = rc {
@@ -229,6 +230,7 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
     let assets = Assets {
         ggd: sm2mpx::Archive::open(&format!("{}/GGD", dir))?,
         ggd2: sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok(),
+        data: sm2mpx::Archive::open(&format!("{}/DATA", dir)).ok(),
     };
     // 窗框：GGD 里的 FWIN.GG2（552×152 的黑色圆角框，带外发光）
     // 窗框：FWIN2.GG2 是 60% 不透明的黑色圆角框（对话用），FWIN.GG2 是全黑版（菜单用）
@@ -356,9 +358,17 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
 struct Assets {
     ggd: sm2mpx::Archive,
     ggd2: Option<sm2mpx::Archive>,
+    /// DATA 归档（特效蒙版 EFF*/SEF*.BIN）。
+    data: Option<sm2mpx::Archive>,
 }
 
 impl kzn::render::ImageSource for Assets {
+    fn data(&self, name: &str) -> Option<Vec<u8>> {
+        let a = self.data.as_ref()?;
+        let e = a.find(name).or_else(|| a.find_stem(name))?;
+        a.bytes(e).ok()
+    }
+
     fn image(&self, name: &str) -> Option<ggd::Image> {
         for arc in [Some(&self.ggd), self.ggd2.as_ref()].into_iter().flatten() {
             if let Some(e) = arc.find(name).or_else(|| arc.find_stem(name)) {
@@ -632,6 +642,52 @@ impl kzn::engine::AudioSource for Media {
 ///
 /// 无人值守跑一遍：台词全部瞬间显示、选项永远选第 0 项。
 /// 这是主循环的端到端验证——能把一个剧本从头跑到尾，就说明等待/推进/事件分发都对上了。
+/// `kzn mask <目录> <蒙版名> [--png out.png]`
+/// 解一张 0x60 特效蒙版（DATA 里的 EFF*/SEF*.BIN，320×240 8bpp BMP），
+/// 打印直方图，可选导出成灰度 PNG。
+fn cmd_mask(args: &[String]) -> kzn::Result<()> {
+    if args.len() < 2 {
+        usage();
+    }
+    let arc = sm2mpx::Archive::open(&format!("{}/DATA", &args[0]))?;
+    let want = &args[1];
+    let e = arc
+        .find(want)
+        .or_else(|| arc.find_stem(want))
+        .ok_or_else(|| format!("DATA 里没有 {}", want))?;
+    let bytes = arc.bytes(e)?;
+    let (w, h, idx) = kzn::render::decode_mask(&bytes)
+        .ok_or_else(|| format!("{} 不是 8bpp BMP", want))?;
+    let mut hist = [0u64; 256];
+    for &v in &idx {
+        hist[v as usize] += 1;
+    }
+    let nz = idx.iter().filter(|&&v| v != 0).count();
+    let full = idx.iter().filter(|&&v| v == 255).count();
+    println!("{}: {}x{}  非零 {} ({:.1}%)  全不透明 {} ({:.1}%)",
+        want, w, h, nz, nz as f64 * 100.0 / idx.len() as f64, full, full as f64 * 100.0 / idx.len() as f64);
+    let mut peaks: Vec<(usize, u64)> = hist.iter().copied().enumerate().collect();
+    peaks.sort_by_key(|&(_, c)| std::cmp::Reverse(c));
+    println!("  最多的灰度: {:?}", &peaks[..5]);
+    if let Some(i) = args.iter().position(|a| a == "--png") {
+        let out = args.get(i + 1).cloned().unwrap_or_else(|| "mask.png".to_string());
+        let mut cv = Canvas::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let v = idx[y * w + x];
+                let d = (y * w + x) * 4;
+                cv.pixels[d] = v;
+                cv.pixels[d + 1] = v;
+                cv.pixels[d + 2] = v;
+                cv.pixels[d + 3] = 255;
+            }
+        }
+        cv.write_png(&out)?;
+        println!("  -> {}", out);
+    }
+    Ok(())
+}
+
 fn cmd_play(args: &[String]) -> kzn::Result<()> {
     if args.len() < 2 {
         usage();
@@ -647,6 +703,7 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
     let assets = Assets {
         ggd: sm2mpx::Archive::open(&format!("{}/GGD", dir))?,
         ggd2: sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok(),
+        data: sm2mpx::Archive::open(&format!("{}/DATA", dir)).ok(),
     };
     let media = Media::open(dir, audio);
 
@@ -711,6 +768,15 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
             .map(|(a, o)| format!("{:#x}:{:02x}", a, o))
             .collect();
         println!("  最后 64 条: {}", tail.join(" "));
+    }
+    if !eng.player.effects.is_empty() {
+        let mut uniq: Vec<&String> = Vec::new();
+        for e in &eng.player.effects {
+            if !uniq.iter().any(|u| *u == e) {
+                uniq.push(e);
+            }
+        }
+        println!("特效 {} 次: {:?}", eng.player.effects.len(), uniq);
     }
     if !eng.player.missing.is_empty() {
         println!("归档里找不到的图: {:?}", eng.player.missing);

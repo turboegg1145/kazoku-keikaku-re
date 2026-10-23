@@ -380,6 +380,60 @@ impl Canvas {
 /// 图片来源：把成员名解析成一张解码好的图（GGD / GGD2 归档）。
 pub trait ImageSource {
     fn image(&self, name: &str) -> Option<Image>;
+    /// 原始数据成员（DATA 归档里的 EFF*.BIN / SEF*.BIN 等）。
+    fn data(&self, _name: &str) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// `0x60` 画面特效：用一张 8bpp 蒙版图做「显示面 → 目标面」的溶解。
+///
+/// 引擎实现 `FUN_004150F0` / `FUN_004156C0`：
+/// ```text
+/// m = 蒙版[i]                                  // 0 = 不参与，保持显示面
+/// if m != 0 {
+///     if invert { m = -m }                     // 0xFF 取反加一
+///     a = clamp(m + progress, 1, 255)          // progress = t*1024/dur - 512
+/// }
+/// dst = (目标 * a + 显示面 * (255 - a)) >> 8
+/// ```
+pub struct Effect {
+    pub name: String,
+    /// 640×480 的蒙版（源图 320×240，按 2× 放大）。
+    pub mask: Vec<u8>,
+    /// 起始画面（显示面快照，特效期间不变）。
+    pub from: Canvas,
+    /// 目标面号。
+    pub to: usize,
+    pub start: f64,
+    pub dur: f64,
+    pub invert: bool,
+}
+
+/// 解 8bpp BMP（特效蒙版）：返回 (宽, 高, 每像素 1 字节，从上到下)。
+pub fn decode_mask(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    if data.len() < 0x36 || &data[..2] != b"BM" {
+        return None;
+    }
+    let off = u32::from_le_bytes(data[0x0A..0x0E].try_into().ok()?) as usize;
+    let w = i32::from_le_bytes(data[0x12..0x16].try_into().ok()?);
+    let h = i32::from_le_bytes(data[0x16..0x1A].try_into().ok()?);
+    let bpp = u16::from_le_bytes(data[0x1C..0x1E].try_into().ok()?);
+    if bpp != 8 || w <= 0 || h == 0 {
+        return None;
+    }
+    let (w, h, top_down) = (w as usize, h.unsigned_abs() as usize, h < 0);
+    let stride = (w + 3) & !3;
+    if off + stride * h > data.len() {
+        return None;
+    }
+    let mut out = vec![0u8; w * h];
+    for y in 0..h {
+        let sy = if top_down { y } else { h - 1 - y };
+        let row = &data[off + sy * stride..off + sy * stride + w];
+        out[y * w..(y + 1) * w].copy_from_slice(row);
+    }
+    Some((w, h, out))
 }
 
 /// 一个选择窗口（引擎里 window 对象的 5 个槽之一）。
@@ -462,6 +516,12 @@ pub struct Player {
     /// 5 个选择窗口（引擎 window 对象的 5 个槽）。
     pub choices: Vec<ChoiceWindow>,
     pub draws: u64,
+    /// 毫秒时钟（特效进度用）。
+    pub clock: f64,
+    /// 正在播的 0x60 特效。
+    pub effect: Option<Effect>,
+    /// 播过的特效名（按顺序）。
+    pub effects: Vec<String>,
 }
 
 impl Default for Player {
@@ -492,11 +552,61 @@ impl Player {
                 })
                 .collect(),
             draws: 0,
+            clock: 0.0,
+            effect: None,
+            effects: Vec::new(),
         }
     }
 
-    /// 当前画面（显示面按滚动偏移裁成 640×480）。
+    /// 推进时间（毫秒），特效进度靠它。
+    pub fn tick(&mut self, dt_ms: f64) {
+        self.clock += dt_ms;
+    }
+
+    /// 当前画面（显示面按滚动偏移裁成 640×480），有特效时叠上特效。
     pub fn frame(&self) -> Canvas {
+        let mut base = self.display_frame();
+        if let Some(e) = self.effect.as_ref() {
+            let prog = if e.dur > 0.0 {
+                (((self.clock - e.start).max(0.0) * 1024.0 / e.dur) as i32) - 512
+            } else {
+                512
+            };
+            let to = match self.surf.get(e.to).and_then(|s| s.as_ref()) {
+                Some(c) => c.crop(0, 0, 640, 480),
+                None => return base,
+            };
+            for i in 0..(base.width * base.height).min(e.mask.len()) {
+                let m = e.mask[i] as i32;
+                if m == 0 {
+                    continue;
+                }
+                let mm = if e.invert { (256 - m) & 0xFF } else { m };
+                let a = {
+                    let v = mm + prog;
+                    if v < 0 {
+                        1
+                    } else if v > 254 {
+                        255
+                    } else {
+                        v
+                    }
+                } as u32;
+                let ia = 255 - a;
+                let d = i * 4;
+                for c in 0..3 {
+                    let s = to.pixels[d + c] as u32;
+                    let b = base.pixels[d + c] as u32;
+                    base.pixels[d + c] = (((s * a) >> 8) + ((b * ia) >> 8)) as u8;
+                }
+                base.pixels[d + 3] = 255;
+            }
+        }
+        base
+    }
+
+    /// 只取显示面（不含特效）。
+    pub fn display_frame(&self) -> Canvas {
         let (ox, oy) = self.off[self.display];
         match self.surf[self.display].as_ref() {
             Some(c) => c.crop(ox, oy, 640, 480),
@@ -665,6 +775,46 @@ impl Player {
                     // 其余 cmd 都是「过渡到最终状态」，静态帧等于贴满。
                     _ => self.blit(d, s, *x, *y, *w, *h, *dx, *dy, 255),
                 }
+                true
+            }
+            Event::Effect { args, name } => {
+                // 0x60 <种类> <面> <时长> <取反> <附加> <蒙版名>
+                // 只见到种类 0（FUN_004150F0）；1/2 是别的算法，先记下来不猜。
+                if args[0] != 0 {
+                    self.missing.push(format!("effect-kind{}", args[0]));
+                    return false;
+                }
+                let to = (args[1] & 0x7F) as usize;
+                let dur = args[2].max(1) as f64;
+                let invert = args[3] != 0;
+                let Some(data) = src.data(name) else {
+                    self.missing.push(name.clone());
+                    return false;
+                };
+                let Some((w, h, idx)) = decode_mask(&data) else {
+                    self.missing.push(name.clone());
+                    return false;
+                };
+                // 引擎把 320×240 的蒙版按 2× 放大到 640×480。
+                let mut mask = vec![0u8; 640 * 480];
+                for y in 0..480usize {
+                    let sy = (y * h / 480).min(h - 1);
+                    for x in 0..640usize {
+                        let sx = (x * w / 640).min(w - 1);
+                        mask[y * 640 + x] = idx[sy * w + sx];
+                    }
+                }
+                let from = self.display_frame();
+                self.effects.push(format!("{}({}ms,面{}{})", name, dur as i64, to, if invert { ",反" } else { "" }));
+                self.effect = Some(Effect {
+                    name: name.clone(),
+                    mask,
+                    from,
+                    to,
+                    start: self.clock,
+                    dur,
+                    invert,
+                });
                 true
             }
             _ => false,

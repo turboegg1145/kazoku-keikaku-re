@@ -195,6 +195,7 @@ impl Engine {
     pub fn tick(&mut self, dt_ms: f64) {
         self.clock += dt_ms;
         self.st.borrow_mut().clock = self.clock as i32;
+        self.player.tick(dt_ms);
         if let Wait::Text = self.wait {
             if let Some(l) = self.line.as_mut() {
                 l.shown += self.speed * (dt_ms as f32) / 1000.0;
