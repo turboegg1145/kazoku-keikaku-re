@@ -135,6 +135,8 @@ pub struct Engine {
     pub line: Option<Line>,
     /// 出现过的所有台词（按顺序，给日志/回顾用）。
     pub log: Vec<Line>,
+    /// 出现过的所有选项窗：(窗口号, 选项文本)。
+    pub choice_log: Vec<(usize, Vec<String>)>,
     /// 打字速度（字符/秒）。引擎默认值未确认，这里取 50。
     pub speed: f32,
     /// 已出现过的台词数 / 选项数。
@@ -152,6 +154,8 @@ pub struct Engine {
     cache: HashMap<String, Arc<Track>>,
     /// 主音量（0..=1）。
     pub volume: f32,
+    /// 连续多少帧「跑了指令但没有任何事件」。用来识别脚本的空转等待。
+    pub idle: u32,
 }
 
 impl Engine {
@@ -159,6 +163,11 @@ impl Engine {
         let st = Rc::new(RefCell::new(InputState::default()));
         vm.host = Box::new(EngineHost { st: st.clone() });
         vm.block_on_input = true;
+        // 消息窗口本身就是一个热区（原版里点它推进台词）。
+        {
+            let (mx, my) = Player::new().msg_origin();
+            st.borrow_mut().spots = vec![(mx, my, 552, 152)];
+        }
         Engine {
             vm,
             player: Player::new(),
@@ -168,6 +177,7 @@ impl Engine {
             wait: Wait::Run,
             line: None,
             log: Vec::new(),
+            choice_log: Vec::new(),
             speed: 50.0,
             lines: 0,
             choices: 0,
@@ -177,6 +187,7 @@ impl Engine {
             voice_archive: "VOICE1".to_string(),
             cache: HashMap::new(),
             volume: 1.0,
+            idle: 0,
         }
     }
 
@@ -239,6 +250,7 @@ impl Engine {
             self.drain(src, media);
             if self.lines + self.choices != before {
                 idle = 0;
+                self.idle = 0;
             }
             if self.vm.blocked {
                 self.wait = self.blocked_wait();
@@ -252,6 +264,9 @@ impl Engine {
                     return;
                 }
             }
+        }
+        if idle == 0 {
+            self.idle = self.idle.saturating_add(1);
         }
         self.wait = Wait::Run;
     }
@@ -318,9 +333,16 @@ impl Engine {
                         self.mixer.stop_voice();
                     }
                 }
-                Event::ChoiceOpen { .. } => {
+                Event::ChoiceOpen { window, count, .. } => {
                     self.choices += 1;
                     self.player.apply(&ev, src);
+                    let w = *window as usize;
+                    if let Some(cw) = self.player.choices.get(w) {
+                        let opts: Vec<String> = (0..(*count as usize).min(cw.items.len()))
+                            .filter_map(|i| cw.text_at(i).map(|(_, _, _, _, t)| t.to_string()))
+                            .collect();
+                        self.choice_log.push((w, opts));
+                    }
                 }
                 _ => {
                     self.player.apply(&ev, src);
@@ -419,7 +441,9 @@ impl Engine {
                 if self.vm.blocked {
                     self.vm.unblock();
                 } else {
-                    self.st.borrow_mut().clicked = true;
+                    let mut s = self.st.borrow_mut();
+                    s.mouse = (336, 396);
+                    s.clicked = true;
                 }
                 self.pump(src, media, STEP_BUDGET);
                 true
@@ -432,6 +456,11 @@ impl Engine {
             }
             Wait::Run => {
                 // 本帧预算跑完了但 VM 还没阻塞（过场、动画循环）：继续跑。
+                // 连续空转说明脚本在等「鼠标移上去」这类外部状态，
+                // 原版靠消息循环在帧之间更新，这里直接模拟成「光标停在第 0 项」。
+                if self.idle >= 1 && self.vm.hover < 0 {
+                    self.vm.hover = 0;
+                }
                 let before = self.vm.steps;
                 self.pump(src, media, STEP_BUDGET);
                 self.vm.steps != before

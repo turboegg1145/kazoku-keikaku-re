@@ -557,6 +557,8 @@ pub struct Vm {
     /// 上一条 0x85 是不是「轮询了但没输入」。脚本靠循环轮询等点击，
     /// 主循环靠这个标记判断「它其实在等人」。
     pub poll_wait: bool,
+    /// 最近执行过的指令 (地址, 操作码)，只保留最后 64 条，死循环排查用。
+    pub recent: std::collections::VecDeque<(usize, u8)>,
     ret: Vec<usize>,
     pub events: Vec<Event>,
     pub steps: u64,
@@ -633,6 +635,7 @@ impl Vm {
             blocked_end: 0,
             block_requested: false,
             poll_wait: false,
+            recent: std::collections::VecDeque::with_capacity(64),
             ret: Vec::new(),
             events: Vec::new(),
             steps: 0,
@@ -914,6 +917,10 @@ impl Vm {
             return Ok(Some(Halt::BadLength { at: start, len }));
         }
         self.steps += 1;
+        if self.recent.len() >= 64 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back((start, op));
         match self.exec(op, end) {
             Ok(true) => {
                 if self.block_requested {

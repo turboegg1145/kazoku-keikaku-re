@@ -640,7 +640,7 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
     let script_name = &args[1];
     let steps = flag(args, "--steps", 5_000_000);
     let want_lines = flag(args, "--lines", 40) as usize;
-    let budget = flag(args, "--budget", 20_000) as usize;
+    let budget = flag(args, "--budget", 4_000) as usize;
     let audio = !args.iter().any(|a| a == "--no-audio");
     let verbose = !args.iter().any(|a| a == "--quiet");
 
@@ -660,6 +660,7 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
     eng.pump(&assets, &media, budget);
 
     let mut printed = 0usize;
+    let mut shown_choices = 0usize;
     let mut last_wait = eng.wait.clone();
     let mut frames = 0u64;
     loop {
@@ -673,17 +674,12 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
                 println!("{} [{}] {}", printed + 1, who, l.text);
                 printed += 1;
             }
-            if eng.wait != last_wait {
-                if let kzn::engine::Wait::Choice(w) = eng.wait.clone() {
-                    if let Some(cw) = eng.player.choices.get(w) {
-                        let opts: Vec<String> = (0..cw.open as usize)
-                            .filter_map(|i| cw.text_at(i).map(|(_, _, _, _, t)| t.to_string()))
-                            .collect();
-                        println!("  选项窗 {}: {}", w, opts.join(" / "));
-                    }
-                }
-                last_wait = eng.wait.clone();
+            while shown_choices < eng.choice_log.len() {
+                let (w, opts) = &eng.choice_log[shown_choices];
+                println!("  选项窗 {}: {}", w, opts.join(" / "));
+                shown_choices += 1;
             }
+            let _ = &last_wait;
         }
         if eng.lines >= want_lines {
             println!("-- 已跑 {} 句台词，主动停", eng.lines);
@@ -707,6 +703,15 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
         "{}: 台词 {} 句，选项 {} 个，帧 {}，指令 {}，结束 {:?}",
         script_name, eng.lines, eng.choices, frames, eng.vm.steps, eng.wait
     );
+    if args.iter().any(|a| a == "--trace") {
+        let tail: Vec<String> = eng
+            .vm
+            .recent
+            .iter()
+            .map(|(a, o)| format!("{:#x}:{:02x}", a, o))
+            .collect();
+        println!("  最后 64 条: {}", tail.join(" "));
+    }
     if !eng.player.missing.is_empty() {
         println!("归档里找不到的图: {:?}", eng.player.missing);
     }
