@@ -32,7 +32,10 @@ jobs:
           targets: aarch64-apple-ios
 
       - name: 编译引擎（静态库）
-        run: cargo build --release --target aarch64-apple-ios --manifest-path rust/Cargo.toml
+        run: |
+          cargo build --release --target aarch64-apple-ios --manifest-path rust/Cargo.toml
+          ls -l rust/target/aarch64-apple-ios/release/libkzn.a
+          nm -g rust/target/aarch64-apple-ios/release/libkzn.a 2>/dev/null | grep -E 'kv_open|kzn_frame' | head
 
       - name: 安装 XcodeGen
         run: |
@@ -60,6 +63,9 @@ jobs:
         run: |
           mkdir -p out/Payload
           cp -R build/Build/Products/Release-iphoneos/Kzn.app out/Payload/
+          ls -l out/Payload/Kzn.app/Kzn
+          # 探针：确认 pl_mpeg 真的进了可执行文件
+          strings out/Payload/Kzn.app/Kzn | grep -c 'plm_video' || true
           cd out && zip -qry Kzn.ipa Payload
 
       - uses: actions/upload-artifact@v4
