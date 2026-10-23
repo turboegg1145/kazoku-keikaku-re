@@ -861,7 +861,7 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                              index, line, col, value, text)?
                 }
                 isf::Event::TextObjFull(v) => writeln!(f, "[TEXT_OBJ_FULL] {}", hexs(v))?,
-                isf::Event::TextObjFlag(v) => writeln!(f, "[TEXT_OBJ_FLAG] {}", v)?,
+                isf::Event::SysDialog(v) => writeln!(f, "[SYS_DIALOG] {}", v)?,
                 isf::Event::Movie { x, y, w, h, name } => {
                     writeln!(f, "[MOVIE] {},{} {}x{} {}", x, y, w, h, name)?
                 }

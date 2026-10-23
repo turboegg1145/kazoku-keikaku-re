@@ -146,6 +146,8 @@ pub enum Wait {
     Input,
     /// 有选项窗打开，等玩家点某一项。
     Choice(usize),
+    /// `0xE5` 的模态对话框开着：0 = 存档，1 = 读档，2.. = 设置。
+    Dialog(u8),
     /// 脚本结束。
     Halt(Halt),
     /// VM 内部错误（长度/越界/标签）。
@@ -185,6 +187,8 @@ pub struct Engine {
     pub volume: f32,
     /// 连续多少帧「跑了指令但没有任何事件」。用来识别脚本的空转等待。
     pub idle: u32,
+    /// `0xE5` 打开的模态对话框（模式号）；None = 没有。
+    pub dialog: Option<u8>,
 }
 
 impl Engine {
@@ -215,6 +219,7 @@ impl Engine {
             cache: HashMap::new(),
             volume: 1.0,
             idle: 0,
+            dialog: None,
         }
     }
 
@@ -242,6 +247,10 @@ impl Engine {
 
     /// VM 阻塞时该报哪种等待。
     fn blocked_wait(&self) -> Wait {
+        // 模态对话框优先：它开着的时候脚本一定停在 0xE5 上。
+        if let Some(m) = self.dialog {
+            return Wait::Dialog(m);
+        }
         if let Some(l) = self.line.as_ref() {
             if !l.done() {
                 return Wait::Text;
@@ -258,6 +267,11 @@ impl Engine {
     /// 跑一帧：最多 `budget` 条指令，遇到阻塞就停。
     pub fn pump(&mut self, src: &dyn ImageSource, media: &dyn AudioSource, budget: usize) {
         if let Wait::Halt(_) = self.wait {
+            return;
+        }
+        // 对话框是模态的：原版 DoModal 期间脚本线程不动，这里也一样。
+        if let Some(m) = self.dialog {
+            self.wait = Wait::Dialog(m);
             return;
         }
         if self.vm.blocked {
@@ -371,6 +385,11 @@ impl Engine {
                         self.mixer.stop_voice();
                     }
                 }
+                // `0xE5`：模态对话框（存档 / 读档 / 设置）。VM 已经停在指令上，
+                // 等前端调 close_dialog 才继续。
+                Event::SysDialog(m) => {
+                    self.dialog = Some(*m);
+                }
                 Event::ChoiceOpen { window, count, .. } => {
                     self.choices += 1;
                     self.player.apply(&ev, src);
@@ -420,6 +439,29 @@ impl Engine {
                 Some(t)
             }
             Err(_) => None,
+        }
+    }
+
+    /// 关掉 `0xE5` 打开的模态对话框。
+    ///
+    /// `reload` = 玩家确认了「读档」：原版 FUN_0043F9A0 在对话框返回 10 之后会
+    /// `FUN_00435B00`（重置 VM）→ `FUN_00434B50(vm, "LOAD")`（DAT_0047F4E8 里就是
+    /// `"LOAD"`）→ `FUN_00434EB0`，也就是整个脚本链从头换成 LOAD.ISF。
+    /// LOAD.ISF 按 `var[0x63]`（章节号，存档里带着）`0x01 SNRxx` 跳回对应章节。
+    ///
+    /// `reload` = false 是取消或存档完成：补一次 `FUN_00434EB0`，脚本接着往下跑。
+    pub fn close_dialog(&mut self, reload: bool) {
+        if self.dialog.take().is_none() {
+            return;
+        }
+        if reload {
+            self.line = None;
+            self.player.choices.clear();
+            self.vm.jump_script("LOAD");
+            self.wait = Wait::Run;
+        } else {
+            self.vm.unblock();
+            self.wait = Wait::Run;
         }
     }
 

@@ -23,6 +23,8 @@ pub const KZN_INPUT: c_int = 2;
 pub const KZN_CHOICE: c_int = 3;
 pub const KZN_HALT: c_int = 4;
 pub const KZN_FAILED: c_int = 5;
+/// `0xE5` 的模态对话框开着（存档 / 读档 / 设置），前端应该显示存读档界面。
+pub const KZN_DIALOG: c_int = 6;
 
 pub struct Kzn {
     assets: Assets,
@@ -158,6 +160,35 @@ pub extern "C" fn kzn_tick(k: *mut Kzn, dt_ms: f64) {
 #[no_mangle]
 pub extern "C" fn kzn_pump(k: *mut Kzn, budget: u32) {
     if let Some(k) = unsafe { k.as_mut() } {
+        // 脚本要开对话框：把界面拉起来，然后停在这里等玩家。
+        // 原版是 FUN_0043F9A0 里的 DoModal，脚本线程就卡在 0xE5 上。
+        if let Some(e) = k.engine.as_ref() {
+            if let Some(m) = e.dialog {
+                if k.save_ui.is_none() {
+                    match m {
+                        0 | 1 => {
+                            let mode = if m == 0 {
+                                crate::saveui::Mode::Save
+                            } else {
+                                crate::saveui::Mode::Load
+                            };
+                            k.save_ui = Some(crate::saveui::SaveScreen::open(&k.dir, mode));
+                        }
+                        _ => {
+                            // mode >= 2 是设置对话框（DoModal 参数 mode-2 是页号）。
+                            // 设置项还没复刻，先直接放行，别把脚本卡死。
+                            if let Some(e) = k.engine.as_mut() {
+                                e.close_dialog(false);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        if k.save_ui.is_some() {
+            return;
+        }
         if let Some(e) = k.engine.as_mut() {
             e.pump(&k.assets, &k.assets, budget.max(1) as usize);
         }
@@ -174,6 +205,7 @@ pub extern "C" fn kzn_state(k: *mut Kzn) -> c_int {
         Wait::Text => KZN_TEXT,
         Wait::Input => KZN_INPUT,
         Wait::Choice(_) => KZN_CHOICE,
+        Wait::Dialog(_) => KZN_DIALOG,
         Wait::Halt(_) => KZN_HALT,
         Wait::Failed(_) => KZN_FAILED,
     }
@@ -231,6 +263,8 @@ pub extern "C" fn kzn_save_page(k: *mut Kzn, delta: c_int) {
 /// 处理一次点击。返回 1 表示界面吃掉了这次点击（不传给剧本）。
 fn save_click(k: &mut Kzn, x: i32, y: i32) -> bool {
     let mut done = false;
+    // 读档确认后要重进 LOAD.ISF（原版 FUN_0043F9A0 的返回码 10 分支）。
+    let mut reload = false;
     {
         let Some(s) = k.save_ui.as_mut() else { return false };
         let Some(a) = s.hit(x, y) else { return true };
@@ -262,6 +296,7 @@ fn save_click(k: &mut Kzn, x: i32, y: i32) -> bool {
                         let off = k.offset_secs;
                         let vm = &e.vm;
                         match s.save(vm, &frame, off) {
+                            // 存档不重进剧本：原版的返回码 10 只在读档时出现。
                             Ok(()) => done = true,
                             Err(err) => s.message = format!("保存失败：{}", err),
                         }
@@ -269,7 +304,10 @@ fn save_click(k: &mut Kzn, x: i32, y: i32) -> bool {
                     crate::saveui::Mode::Load => {
                         let Some(e) = k.engine.as_mut() else { return true };
                         match s.load(&mut e.vm) {
-                            Ok(()) => done = true,
+                            Ok(()) => {
+                                done = true;
+                                reload = true;
+                            }
                             Err(err) => s.message = format!("读取失败：{}", err),
                         }
                     }
@@ -279,6 +317,9 @@ fn save_click(k: &mut Kzn, x: i32, y: i32) -> bool {
     }
     if done {
         k.save_ui = None;
+        if let Some(e) = k.engine.as_mut() {
+            e.close_dialog(reload);
+        }
     }
     true
 }

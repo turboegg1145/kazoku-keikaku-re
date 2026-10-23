@@ -216,13 +216,11 @@ pub trait Host {
         (-1, 0)
     }
 
-    /// `0xFC`：毫秒计时器。
+    /// `0xFC`：单调递增的毫秒时钟（原版是 timeGetTime）。
+    /// 累计与清零由 VM 自己做，宿主只提供「现在几点」。
     fn now_ms(&mut self) -> i32 {
         0
     }
-
-    /// `0xFB`：计时器清零。
-    fn reset_timer(&mut self) {}
 
     /// `0xA5`：取存档块 29 的 RLE 数据（已读文本位图）。没有存档就返回 None。
     fn load_seen(&mut self) -> Option<Vec<u8>> {
@@ -251,10 +249,6 @@ impl Host for Headless {
     fn now_ms(&mut self) -> i32 {
         self.clock += 16;
         self.clock
-    }
-
-    fn reset_timer(&mut self) {
-        self.clock = 0;
     }
 }
 
@@ -340,8 +334,10 @@ pub enum Event {
     TextObjCell { index: u8, line: u8, col: u8, value: u16, text: String },
     /// `0xE4`：整块设置（3 个字符串 + 8 个参数，全作只 1 处）。
     TextObjFull(Vec<u8>),
-    /// `0xE5 <u8>`：FUN_0043F9A0。
-    TextObjFlag(u8),
+    /// `0xE5 <u8 mode>`：FUN_0043F9A0，模态对话框。
+    /// mode 0 = 存档、1 = 读档、2.. = 设置（`mode - 2` 是设置页号）。
+    /// 对话框关掉后原版会重置 VM 再载入 `LOAD.ISF`（见 `Engine::close_dialog`）。
+    SysDialog(u8),
     /// `0xF3 <x> <y> <w> <h> <文件名>`：播 MPEG（FUN_0043D890）。
     Movie { x: i32, y: i32, w: i32, h: i32, name: String },
     /// `0xF1 <毫秒>`：设一个截止时间（vm+0x7B4 = timeGetTime() + n）。
@@ -663,6 +659,14 @@ pub struct Vm {
     sav_ready: bool,
     /// `0xF1` 设的等待时长（引擎 vm+0x7B4 存的是 timeGetTime()+n）。
     pub deadline: i32,
+    /// 引擎 `+0x184`：计时器是否在走（`0xFA` 置 1，`0xFB` 清 0）。
+    timer_active: bool,
+    /// 引擎 `+0x185`：计时器冻结。原版没有指令能置它，留着只为字段对得上。
+    timer_frozen: bool,
+    /// 引擎 `+0x188`：累计毫秒。`0xFA` 直接把它设成参数值。
+    timer_elapsed: i32,
+    /// 引擎 `+0x18C`：上次取时间戳的 timeGetTime()。
+    timer_last: i32,
     /// 收到这么多句台词就停（渲染用；None = 不停）。
     pub stop_texts: Option<usize>,
     /// 已经产生的台词数。
@@ -727,6 +731,10 @@ impl Vm {
             sav_vars: 0,
             sav_ready: false,
             deadline: 0,
+            timer_active: false,
+            timer_frozen: false,
+            timer_elapsed: 0,
+            timer_last: 0,
             stop_texts: None,
             text_count: 0,
             stop_choices: None,
@@ -938,6 +946,17 @@ impl Vm {
             }
             None => false,
         }
+    }
+
+    /// 干净的剧本切换：清返回栈和模块栈，再从新剧本第一条开始跑。
+    /// 就是 `0x01` 的处理体，也用于对话框关闭后重进 `LOAD.ISF`（原版 FUN_00435B00 +
+    /// FUN_00434B50）。
+    pub fn jump_script(&mut self, name: &str) -> bool {
+        self.ret.clear();
+        self.mod_stack.clear();
+        self.blocked = false;
+        self.poll_wait = false;
+        self.load_module(name)
     }
 
     pub fn texts(&self) -> impl Iterator<Item = (&Option<u8>, &String, &Option<String>)> {
@@ -1579,9 +1598,17 @@ impl Vm {
                 Ok(false)
             }
             0xE5 => {
-                // FUN_0043D170 → FUN_0043F9A0
+                // FUN_0043D170 → FUN_0043F9A0：模态对话框。
+                //
+                // 原版这里是 Win32 `DoModal`，脚本线程就停在对话框里；关窗后
+                // FUN_0043F9A0 末尾会 FUN_00435B00（重置 VM）+ 载入 `LOAD.ISF`。
+                // 我们用同一条阻塞通道：PC 停在这条指令上，等前端关窗再 unblock。
                 let v = self.take_u8();
-                self.events.push(Event::TextObjFlag(v));
+                self.events.push(Event::SysDialog(v));
+                if self.block_on_input {
+                    self.block_requested = true;
+                    return Ok(true);
+                }
                 Ok(false)
             }
             0xF1 => {
@@ -1624,8 +1651,13 @@ impl Vm {
                 Ok(false)
             }
             0xFA => {
-                // FUN_0043DC70 → FUN_00434590
+                // FUN_0043DC70 → FUN_00434590：启动计时器并把累计值设成参数。
+                //   vm+0x184 = 1 / vm+0x188 = 参数 / vm+0x18C = timeGetTime()
+                // 典型用法 `FA 0` = 把表拨回 0，然后靠 0xFC 读经过的毫秒做淡入淡出。
                 let v = self.val();
+                self.timer_active = true;
+                self.timer_elapsed = v;
+                self.timer_last = self.host.now_ms();
                 self.events.push(Event::FuncFa(v));
                 Ok(false)
             }
@@ -1941,13 +1973,28 @@ impl Vm {
                 Ok(false)
             }
             0xFB => {
-                // 计时器清零：真引擎把 vm+0x184 置 0
-                self.host.reset_timer();
+                // FUN_004345c0：vm+0x184 = 0。计时器「停表」——之后 0xFC 一律读到 0，
+                // 直到再被 0xFA 启动。注意它不清 +0x188。
+                self.timer_active = false;
                 Ok(false)
             }
             0xFC => {
+                // FUN_004345d0：返回「从上次 0xFA/0xFB 之后累计的毫秒数」。
+                //   未启动 → 0；启动中 → 把 (now - 上次时间戳) 加进 +0x188 再返回。
+                // 这是累计量而不是 timeGetTime() 的绝对值，脚本里 `if 已过 >= 时长`
+                // 的写法全靠这一点（START/STAFF 的等待循环）。
                 let idx = self.take_u16();
-                let v = self.host.now_ms();
+                let mut v = 0;
+                if self.timer_active {
+                    if !self.timer_frozen {
+                        let now = self.host.now_ms();
+                        v = self.timer_elapsed.wrapping_add(now.wrapping_sub(self.timer_last));
+                        self.timer_elapsed = v;
+                        self.timer_last = self.host.now_ms();
+                    } else {
+                        v = self.timer_elapsed;
+                    }
+                }
                 self.set_var(idx, v);
                 Ok(false)
             }
