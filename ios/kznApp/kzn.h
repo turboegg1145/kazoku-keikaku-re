@@ -14,7 +14,9 @@ enum {
   KZN_INPUT = 2,
   KZN_CHOICE = 3,
   KZN_HALT = 4,
-  KZN_FAILED = 5
+  KZN_FAILED = 5,
+  // 0xE5 的模态对话框开着（存档 / 读档 / 设置）
+  KZN_DIALOG = 6
 };
 
 typedef struct Kzn Kzn;
@@ -40,6 +42,7 @@ int  kzn_error(Kzn *k, char *out, int cap);
 int  kzn_save_open(Kzn *k, int mode);   // mode: 0 = 读档, 1 = 存档
 void kzn_save_close(Kzn *k);
 int  kzn_save_active(Kzn *k);
+int  kzn_title(Kzn *k);               // 回标题（原版右键菜单的「タイトルに戻る」）
 void kzn_save_move(Kzn *k, int x, int y);
 void kzn_save_page(Kzn *k, int delta);
 

@@ -117,8 +117,11 @@ final class GameUIView: UIView {
     private func setupEngine() {
         // TrollStore 安装后，游戏数据放 Documents（用文件 App / AFC 拷进去）。
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
-        let font = Bundle.main.path(forResource: "DroidSansFallbackFull", ofType: "ttf")
+        // 优先用带拉丁字形的字体（原版 MS Gothic 数字/字母都有）。
+        // `#0` 是 ttc 集合里的字面号，NotoSansCJK 的 0 = JP。
+        let font = Bundle.main.path(forResource: "NotoSansCJK-Regular", ofType: "ttc").map { $0 + "#0" }
             ?? Bundle.main.path(forResource: "NotoSansJP-Regular", ofType: "otf")
+            ?? Bundle.main.path(forResource: "DroidSansFallbackFull", ofType: "ttf")
         guard let font = font else {
             print("[kzn] 找不到字体资源")
             return
@@ -189,6 +192,12 @@ final class GameUIView: UIView {
     func closeSave() {
         guard let engine = engine else { return }
         kzn_save_close(engine)
+    }
+
+    /// 回标题（原版右键菜单的「タイトルに戻る」）。
+    func gotoTitle() {
+        guard let engine = engine else { return }
+        _ = kzn_title(engine)
     }
 
     func flipPage(_ delta: Int32) {

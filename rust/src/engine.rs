@@ -442,6 +442,18 @@ impl Engine {
         }
     }
 
+    /// 回标题（原版右键菜单的「タイトルに戻る」，确认框之后载入 `TITLE.ISF`）。
+    ///
+    /// 和 `0x01` 一样是干净切换：清返回栈、模块栈，从 TITLE 第一条开始跑。
+    pub fn goto_title(&mut self) {
+        self.line = None;
+        self.player.choices.clear();
+        self.halt = None;
+        self.dialog = None;
+        self.vm.jump_script("TITLE");
+        self.wait = Wait::Run;
+    }
+
     /// 关掉 `0xE5` 打开的模态对话框。
     ///
     /// `reload` = 玩家确认了「读档」：原版 FUN_0043F9A0 在对话框返回 10 之后会

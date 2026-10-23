@@ -239,6 +239,16 @@ pub extern "C" fn kzn_save_close(k: *mut Kzn) {
     }
 }
 
+/// 回标题（原版右键菜单的「タイトルに戻る」）。
+#[no_mangle]
+pub extern "C" fn kzn_title(k: *mut Kzn) -> c_int {
+    let Some(k) = (unsafe { k.as_mut() }) else { return 0 };
+    let Some(e) = k.engine.as_mut() else { return 0 };
+    k.save_ui = None;
+    e.goto_title();
+    1
+}
+
 /// 存读档界面是否开着。
 #[no_mangle]
 pub extern "C" fn kzn_save_active(k: *mut Kzn) -> c_int {

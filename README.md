@@ -44,6 +44,8 @@
 - [主循环与阻塞](docs/11-engine.md)
 - [画面特效 0x60 / 抖动 0x63](docs/12-effects.md)
 - [文字窗：文本流与控制码](docs/13-text.md)
+- [存读档界面](docs/14-saveui.md)
+- [标题菜单 / 读档流程 / 原生菜单](docs/15-menu.md)
 - [负结果与踩坑记录](notes/negative-results.md)
 
 ## iOS
