@@ -27,12 +27,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.kazoku.kzn
         INFOPLIST_FILE: kznApp/Info.plist
         SWIFT_OBJC_BRIDGING_HEADER: kznApp/kzn-Bridging-Header.h
-        LIBRARY_SEARCH_PATHS:
-          - $(inherited)
-          - $(SRCROOT)/../rust/target/aarch64-apple-ios/release
+        # 必须显式指到 .a 并且 force_load：
+        # 1) 只用 -lkzn 的话，目录里同时有 .dylib 时会优先用 dylib；
+        # 2) 静态库里的 `#[no_mangle]` 符号（kzn_frame 等）没有别的引用，
+        #    不加 force_load 会被 -dead_strip 丢掉。
         OTHER_LDFLAGS:
           - $(inherited)
-          - -lkzn
+          - -Wl,-force_load,$(SRCROOT)/../rust/target/aarch64-apple-ios/release/libkzn.a
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
       - sdk: Metal.framework

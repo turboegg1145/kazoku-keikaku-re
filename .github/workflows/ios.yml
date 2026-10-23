@@ -64,8 +64,13 @@ jobs:
           mkdir -p out/Payload
           cp -R build/Build/Products/Release-iphoneos/Kzn.app out/Payload/
           ls -l out/Payload/Kzn.app/Kzn
-          # 探针：确认 pl_mpeg 真的进了可执行文件
-          strings out/Payload/Kzn.app/Kzn | grep -c 'plm_video' || true
+          # 探针：可执行文件里不能出现 libkzn.dylib 的引用。
+          # 出现了就说明链的是动态库（ipa 里没这个文件，真机启动必闪退）。
+          if strings out/Payload/Kzn.app/Kzn | grep -q 'libkzn\.dylib'; then
+            echo "错误：App 引用了 libkzn.dylib，静态库没链进去"
+            exit 1
+          fi
+          echo "静态链接 OK"
           cd out && zip -qry Kzn.ipa Payload
 
       - uses: actions/upload-artifact@v4

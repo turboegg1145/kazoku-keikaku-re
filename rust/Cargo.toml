@@ -7,7 +7,10 @@ license = "MIT OR Apache-2.0"
 
 [lib]
 name = "kzn"
-crate-type = ["rlib", "cdylib", "staticlib"]
+# 只要 rlib（Linux 的 kzn 命令）和 staticlib（iOS）。
+# 千万别加 cdylib：iOS 那边 `-lkzn` 会优先挑 libkzn.dylib，
+# 结果 ipa 里根本没有这个 dylib，真机启动直接闪退。
+crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 png = "0.18"
