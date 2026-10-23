@@ -69,10 +69,15 @@ pub extern "C" fn kzn_open(dir: *const c_char, audio: c_int, font: *const c_char
     let Ok(assets) = Assets::open(dir, audio != 0) else {
         return std::ptr::null_mut();
     };
-    let Ok(font_data) = std::fs::read(font) else {
+    // 字体路径可以写成 `xxx.ttc#2` 选集合里的第几个字面（NotoSansCJK 0 = JP）。
+    let (font_path, face) = match font.rsplit_once('#') {
+        Some((p, n)) => (p, n.parse::<u32>().unwrap_or(0)),
+        None => (font, 0),
+    };
+    let Ok(font_data) = std::fs::read(font_path) else {
         return std::ptr::null_mut();
     };
-    let Ok(composer) = Composer::from_bytes(font_data, crate::compose::TEXT_SIZE, &assets) else {
+    let Ok(composer) = Composer::from_bytes_idx(font_data, crate::compose::TEXT_SIZE, &assets, face) else {
         return std::ptr::null_mut();
     };
     let k = Kzn {

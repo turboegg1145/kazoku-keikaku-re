@@ -11,6 +11,16 @@ use kzn::render::Canvas;
 use kzn::{ggd, isf, sav, sm2mpx};
 use std::io::Write;
 
+/// 读字体文件。路径可以写成 `xxx.ttc#2`，末尾的 `#N` 是字体集合里的字面号
+/// （NotoSansCJK 里 0 = JP）。
+fn read_font(path: &str) -> kzn::Result<(Vec<u8>, u32)> {
+    let (p, face) = match path.rsplit_once('#') {
+        Some((a, b)) => (a, b.parse::<u32>().unwrap_or(0)),
+        None => (path, 0),
+    };
+    Ok((std::fs::read(p)?, face))
+}
+
 fn usage() -> ! {
     eprintln!("{}", env!("CARGO_PKG_DESCRIPTION"));
     eprintln!();
@@ -102,7 +112,7 @@ fn cmd_save(args: &[String]) -> kzn::Result<()> {
         .position(|a| a == "--font")
         .and_then(|i| args.get(i + 1))
         .cloned()
-        .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
+        .unwrap_or_else(|| "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc#0".to_string());
 
     let mut scr = SaveScreen::open(dir, if put.is_some() { Mode::Save } else { Mode::Load });
     scr.page = page.min(kzn::saveui::PAGES - 1);
@@ -110,9 +120,9 @@ fn cmd_save(args: &[String]) -> kzn::Result<()> {
     println!("存档：{} 格已用 / {}", scr.file.slots.iter().filter(|s| s.used()).count(), kzn::sav::SLOT_N);
 
     // 需要一张游戏画面：跑到第一句台词就停
-    let font_data = std::fs::read(&font_path)?;
+    let (font_data, face) = read_font(&font_path)?;
     let assets = kzn::assets::Assets::open(dir, false)?;
-    let composer = kzn::compose::Composer::from_bytes(font_data, kzn::compose::TEXT_SIZE, &assets)?;
+    let composer = kzn::compose::Composer::from_bytes_idx(font_data, kzn::compose::TEXT_SIZE, &assets, face)?;
     let exe_path = format!("{}/KIZUNAR.EXE", dir);
     let arc_path = format!("{}/ISF", dir);
     let script = load_script(&exe_path, &arc_path, &script_name)?;
@@ -310,12 +320,12 @@ fn cmd_shot(args: &[String]) -> kzn::Result<()> {
         .position(|a| a == "--font")
         .and_then(|i| args.get(i + 1))
         .cloned()
-        .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
+        .unwrap_or_else(|| "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc#0".to_string());
 
-    let font_data = std::fs::read(&font_path)?;
+    let (font_data, face) = read_font(&font_path)?;
     let assets = kzn::assets::Assets::open(dir, false)?;
     // 窗框：FWIN2.GG2 是 60% 不透明的黑色圆角框（对话用），FWIN.GG2 是全黑版（菜单用）
-    let composer = kzn::compose::Composer::from_bytes(font_data, size, &assets)?;
+    let composer = kzn::compose::Composer::from_bytes_idx(font_data, size, &assets, face)?;
 
     let exe_path = format!("{}/KIZUNAR.EXE", dir);
     let arc_path = format!("{}/ISF", dir);
@@ -1135,7 +1145,7 @@ fn cmd_abi(args: &[String]) -> kzn::Result<()> {
         .position(|a| a == "--font")
         .and_then(|i| args.get(i + 1))
         .cloned()
-        .unwrap_or_else(|| "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf".to_string());
+        .unwrap_or_else(|| "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc#0".to_string());
     let font = CString::new(font_path).map_err(|_| kzn::Error("字体路径有 NUL".into()))?;
     let frames = flag(args, "--frames", 600) as usize;
     // --click x,y：把「自动点一下」的位置换掉，用来驱动标题/鉴赏这类菜单。

@@ -22,7 +22,19 @@ pub struct Composer {
 
 impl Composer {
     pub fn from_bytes(bytes: Vec<u8>, size: f32, assets: &dyn ImageSource) -> crate::Result<Composer> {
-        let font = fontdue::Font::from_bytes(bytes.as_slice(), fontdue::FontSettings::default())
+        Composer::from_bytes_idx(bytes, size, assets, 0)
+    }
+
+    /// `collection_index` 用来选 `.ttc` 字体集合里的第几个字面（NotoSansCJK 里
+    /// 0 = JP、1 = KR、2 = SC …）。单字面的 ttf/otf 传 0。
+    pub fn from_bytes_idx(
+        bytes: Vec<u8>,
+        size: f32,
+        assets: &dyn ImageSource,
+        collection_index: u32,
+    ) -> crate::Result<Composer> {
+        let settings = fontdue::FontSettings { collection_index, ..Default::default() };
+        let font = fontdue::Font::from_bytes(bytes.as_slice(), settings)
             .map_err(|e| crate::Error(format!("字体加载失败: {}", e)))?;
         let frame = assets.image("FWIN2.GG2").or_else(|| assets.image("FWIN.GG2"));
         Ok(Composer { font, size, frame })

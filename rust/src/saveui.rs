@@ -58,8 +58,13 @@ const ROW_W: i32 = 300;
 const ROW_H: i32 = 30;
 const ROW_STEP: i32 = 34;
 const PREVIEW: (i32, i32) = (396, 84);
-const BTN_OK: (i32, i32, i32, i32) = (292, 402, 96, 30);
-const BTN_CANCEL: (i32, i32, i32, i32) = (400, 402, 96, 30);
+/// 底部一行：上一页 / 下一页 / 页号，再下面是确定 / 取消。
+const PAGER_Y: i32 = ROW_Y + PER_PAGE as i32 * ROW_STEP + 2;
+const PAGER_H: i32 = 22;
+const BTN_OK: (i32, i32, i32, i32) = (340, PAGER_Y + PAGER_H + 2, 90, 26);
+const BTN_CANCEL: (i32, i32, i32, i32) = (440, PAGER_Y + PAGER_H + 2, 90, 26);
+const BTN_PREV: (i32, i32, i32, i32) = (ROW_X, PAGER_Y, 100, PAGER_H);
+const BTN_NEXT: (i32, i32, i32, i32) = (ROW_X + 110, PAGER_Y, 100, PAGER_H);
 
 fn inside(r: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
     x >= r.0 && y >= r.1 && x < r.0 + r.2 && y < r.1 + r.3
@@ -172,10 +177,10 @@ impl SaveScreen {
         if inside(BTN_CANCEL, x, y) {
             return Some(Action::Cancel);
         }
-        if inside((ROW_X, ROW_Y + PER_PAGE as i32 * ROW_STEP, 120, 24), x, y) {
+        if inside(BTN_PREV, x, y) {
             return Some(Action::Prev);
         }
-        if inside((ROW_X + 130, ROW_Y + PER_PAGE as i32 * ROW_STEP, 120, 24), x, y) {
+        if inside(BTN_NEXT, x, y) {
             return Some(Action::Next);
         }
         None
@@ -261,13 +266,14 @@ impl SaveScreen {
         let date = if s.used() { date_text(&s.time) } else { "（空）".to_string() };
         cv.draw_text(font, &date, vx as isize, (vy + sav::THUMB_H as i32 + 8) as isize, 16.0, (230, 230, 235));
 
-        let by = ROW_Y + PER_PAGE as i32 * ROW_STEP;
-        cv.fill_rect(ROW_X, by, 120, 24, 40, 46, 58, 255);
-        cv.draw_text(font, "◀ 上一页", (ROW_X + 8) as isize, (by + 3) as isize, 15.0, (220, 220, 226));
-        cv.fill_rect(ROW_X + 130, by, 120, 24, 40, 46, 58, 255);
-        cv.draw_text(font, "下一页 ▶", (ROW_X + 138) as isize, (by + 3) as isize, 15.0, (220, 220, 226));
+        let (pvx, pvy, pvw, pvh) = BTN_PREV;
+        cv.fill_rect(pvx, pvy, pvw, pvh, 40, 46, 58, 255);
+        cv.draw_text(font, "◀ 上一页", (pvx + 6) as isize, (pvy + 1) as isize, 15.0, (220, 220, 226));
+        let (nxx, nxy, nxw, nxh) = BTN_NEXT;
+        cv.fill_rect(nxx, nxy, nxw, nxh, 40, 46, 58, 255);
+        cv.draw_text(font, "下一页 ▶", (nxx + 6) as isize, (nxy + 1) as isize, 15.0, (220, 220, 226));
         let page = format!("{}/{}", self.page + 1, PAGES);
-        cv.draw_text(font, &page, (ROW_X + 268) as isize, (by + 3) as isize, 15.0, (170, 176, 190));
+        cv.draw_text(font, &page, (nxx + nxw + 8) as isize, (nxy + 1) as isize, 15.0, (170, 176, 190));
 
         let (ox, oy, ow, oh) = BTN_OK;
         cv.fill_rect(ox, oy, ow, oh, 70, 96, 150, 255);
