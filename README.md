@@ -31,7 +31,7 @@
 | `0xE5` 模态对话框 | ✅ 阻塞语义 + 关窗后重置 VM 载入 `LOAD.ISF`（28 章节目录表）|
 | 鉴赏室 | ✅ `BGMLOAD`（BGM 列表）/ `CGMODE`（CG 网格）/ `SEXMODE`（场景回放）都能跑 |
 | 字体 | ✅ Noto Sans CJK JP（原版 MS Gothic 的度量仍不同，见下）|
-| iOS | ⬜ 代码齐了（Metal + CoreAudio + ☰ 菜单 + 设置），**但还没在 CI 上真编过一次** |
+| iOS | ✅ **GitHub Actions 已真编出未签名 `Kzn.ipa`**（arm64 / MinimumOSVersion 14.0 / 13.7 MB），TrollStore 直装 |
 
 已知与原版不同：字体（MS Gothic → Noto Sans CJK JP）、`0xF3` 的 MPEG 片头/片尾不播、
 设置是 iOS 原生表单而不是 Win32 属性页。
@@ -63,6 +63,7 @@
 
 - 接口：`rust/src/capi.rs`（`kzn_open/start/tick/pump/frame/click/audio/…`），声明在 `ios/kznApp/kzn.h`
 - 壳：`ios/`（XcodeGen 工程 + GitHub Actions 出未签名 `Kzn.ipa`，TrollStore 直装）
+- 产物：Actions → `iOS` → Artifacts → `Kzn-ipa`；装法见 [ios/README.md](ios/README.md)
 - 详见 [ios/README.md](ios/README.md)
 - 自检：`kzn abi <游戏目录> <剧本> --frames 600` 完全走 C ABI 跑一遍并出一张 PNG
 
