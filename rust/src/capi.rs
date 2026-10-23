@@ -369,6 +369,7 @@ fn save_click(k: &mut Kzn, x: i32, y: i32) -> bool {
     }
     true
 }
+#[no_mangle]
 pub extern "C" fn kzn_frame(k: *mut Kzn, out: *mut u8) -> c_int {
     let Some(k) = (unsafe { k.as_mut() }) else { return -1 };
     let Some(e) = k.engine.as_ref() else { return -1 };
