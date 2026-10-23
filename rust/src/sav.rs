@@ -222,6 +222,59 @@ pub fn pack_blocks(blocks: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// 读 30 项块偏移表。
+pub fn table(data: &[u8]) -> [u32; TABLE_N] {
+    let mut t = [0u32; TABLE_N];
+    for (i, v) in t.iter_mut().enumerate() {
+        *v = crate::u32le(data, i * 4);
+    }
+    t
+}
+
+/// 取第 `i` 块的原始字节；空块返回空 vec。
+pub fn block(data: &[u8], i: usize) -> Vec<u8> {
+    let t = table(data);
+    let start = t[i] as usize;
+    if start == 0 || start >= data.len() {
+        return Vec::new();
+    }
+    let mut end = data.len();
+    for j in i + 1..TABLE_N {
+        if t[j] != 0 {
+            end = (t[j] as usize).min(data.len());
+            break;
+        }
+    }
+    if end <= start {
+        return Vec::new();
+    }
+    data[start..end].to_vec()
+}
+
+/// 块 27/28 的头 4 字节 = 容量（`0x48` 写入）。
+///
+/// 原版 `0x49`/`0x4A` 的 `start` 从**头部之后**算起：`FUN_00423F10` /
+/// `FUN_00424CA0` 一进来就先读 4 字节，用它夹住 `start`/`count`，然后才写数据。
+pub fn global_capacity(blk: &[u8]) -> usize {
+    if blk.len() < 4 {
+        0
+    } else {
+        (crate::u32le(blk, 0) & 0xFFFF) as usize
+    }
+}
+
+/// `0x48` 新建块 27/28 时的字节布局（`FUN_00438A90`）。
+///
+/// 位数组：`4 + ceil((((n+7)>>3)+4)/4)*4`；变量数组：`4 + (n*4+4)`。
+/// 512 位 → 72 字节，528 个变量 → 2120 字节，和真实存档完全一致。
+pub fn new_global_block(n: usize, vars: bool) -> Vec<u8> {
+    let payload = if vars { n * 4 + 4 } else { ((n + 7) >> 3) + 4 };
+    let len = 4 + payload.div_ceil(4) * 4;
+    let mut b = vec![0u8; len];
+    b[0..4].copy_from_slice(&(n as u32).to_le_bytes());
+    b
+}
+
 /// 引擎按字节覆盖，实际编解码的位数向上取整到 8 的倍数。
 pub fn bit_total(nbits: usize) -> usize {
     ((nbits + 7) / 8) * 8
@@ -361,6 +414,35 @@ mod tests {
         assert_eq!(back.slots[4].vars[541], -12345);
         assert_eq!(back.slots[4].bits[0], 0b1010_0101);
         assert_eq!(back.newest(), Some(4));
+    }
+
+    #[test]
+    fn global_block_layout_matches_real_save() {
+        // 真实 KIZUNAR.SAV：块 27 = 72 字节（头 512），块 28 = 2120 字节（头 528）。
+        let b = new_global_block(512, false);
+        assert_eq!(b.len(), 72);
+        assert_eq!(global_capacity(&b), 512);
+        let v = new_global_block(528, true);
+        assert_eq!(v.len(), 2120);
+        assert_eq!(global_capacity(&v), 528);
+    }
+
+    #[test]
+    fn rebuild_keeps_other_blocks() {
+        let mut sf = SaveFile::new();
+        sf.slots[2].time = [2026, 9, 0, 19, 21, 0, 0, 0];
+        sf.global_bits = rle_encode(&[0u8; 3751], 30001);
+        let d = build(&sf);
+        let mut blocks: Vec<Vec<u8>> = (0..TABLE_N).map(|i| block(&d, i)).collect();
+        assert!(blocks[27].is_empty() && blocks[28].is_empty());
+        blocks[27] = new_global_block(512, false);
+        blocks[28] = new_global_block(528, true);
+        let out = pack_blocks(&blocks);
+        let back = parse(&out).unwrap();
+        assert_eq!(back.global_bits.len(), 3);
+        assert_eq!(back.system_block(27).len(), 72);
+        assert_eq!(back.system_block(28).len(), 2120);
+        assert_eq!(back.slots[2].time[0], 2026);
     }
 
     #[test]

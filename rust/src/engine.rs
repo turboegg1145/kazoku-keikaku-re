@@ -47,9 +47,11 @@ impl InputState {
     }
 }
 
-/// 给 VM 用的宿主：把输入状态桥接给 `0x85` / `0xFC`。
+/// 给 VM 用的宿主：把输入状态桥接给 `0x85` / `0xFC`，并把存档文件接到 `0x48`。
 pub struct EngineHost {
     pub st: Rc<RefCell<InputState>>,
+    /// 游戏目录；`0x48` 从这里读写 `KIZUNAR.SAV`。
+    pub dir: Option<String>,
 }
 
 impl Host for EngineHost {
@@ -65,6 +67,28 @@ impl Host for EngineHost {
 
     fn now_ms(&mut self) -> i32 {
         self.st.borrow().clock
+    }
+
+    fn save_read(&mut self) -> Option<Vec<u8>> {
+        let dir = self.dir.as_ref()?;
+        std::fs::read(format!("{}/KIZUNAR.SAV", dir)).ok()
+    }
+
+    /// 原版是写 `SAVE.TMP` 再 `DeleteFileA` + `MoveFileA`；这里同样先写临时文件再换名，
+    /// 中途断电不会把存档写坏。
+    fn save_write(&mut self, data: &[u8]) {
+        let Some(dir) = self.dir.as_ref() else {
+            return;
+        };
+        let path = format!("{}/KIZUNAR.SAV", dir);
+        let tmp = format!("{}/SAVE.TMP", dir);
+        if std::fs::write(&tmp, data).is_err() {
+            return;
+        }
+        if std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::rename(&tmp, &path);
+        }
     }
 }
 
@@ -163,7 +187,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(mut vm: Vm) -> Engine {
         let st = Rc::new(RefCell::new(InputState::default()));
-        vm.host = Box::new(EngineHost { st: st.clone() });
+        vm.host = Box::new(EngineHost { st: st.clone(), dir: None });
         vm.block_on_input = true;
         // 消息窗口本身就是一个热区（原版里点它推进台词）。
         {
@@ -191,6 +215,12 @@ impl Engine {
             volume: 1.0,
             idle: 0,
         }
+    }
+
+    /// 指定游戏目录：`0x48` 会从这里读写 `KIZUNAR.SAV`（原版就是游戏目录下的文件）。
+    pub fn with_dir(mut self, dir: &str) -> Engine {
+        self.vm.host = Box::new(EngineHost { st: self.st.clone(), dir: Some(dir.to_string()) });
+        self
     }
 
     /// 推进时间（毫秒）。台词打字靠它。

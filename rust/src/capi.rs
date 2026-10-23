@@ -30,6 +30,8 @@ pub struct Kzn {
     engine: Option<Engine>,
     steps: u64,
     error: Option<String>,
+    /// 游戏目录：`0x48` 从这里读写 `KIZUNAR.SAV`。
+    dir: String,
 }
 
 fn cstr<'a>(p: *const c_char) -> Option<&'a str> {
@@ -67,7 +69,7 @@ pub extern "C" fn kzn_open(dir: *const c_char, audio: c_int, font: *const c_char
     let Ok(composer) = Composer::from_bytes(font_data, crate::compose::TEXT_SIZE, &assets) else {
         return std::ptr::null_mut();
     };
-    let k = Kzn { assets, composer, engine: None, steps: 5_000_000, error: None };
+    let k = Kzn { assets, composer, engine: None, steps: 5_000_000, error: None, dir: dir.to_string() };
     Box::into_raw(Box::new(k))
 }
 
@@ -124,7 +126,7 @@ pub extern "C" fn kzn_start(k: *mut Kzn, script: *const c_char) -> c_int {
     let stem = name.split('.').next().unwrap_or(name).to_string();
     let mods = load_mods(&k.assets);
     let vm = Vm::new(&script, k.steps).with_modules(mods, &stem);
-    k.engine = Some(Engine::new(vm));
+    k.engine = Some(Engine::new(vm).with_dir(&k.dir));
     k.error = None;
     0
 }

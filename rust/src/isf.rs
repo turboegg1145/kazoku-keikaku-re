@@ -224,6 +224,14 @@ pub trait Host {
 
     /// `0xA6`：文字窗口参数。
     fn set_text_rect(&mut self, _a: u8, _b: u16, _c: u16) {}
+
+    /// `0x48`：读出整个 `KIZUNAR.SAV`。没有文件就返回 `None`。
+    fn save_read(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// `0x48`：原子替换写回 `KIZUNAR.SAV`（原版是写 `SAVE.TMP` 再 `MoveFile`）。
+    fn save_write(&mut self, _data: &[u8]) {}
 }
 
 /// 无人值守宿主：不点任何东西，计时器每问一次走 16ms（相当于 60fps 一帧）。
@@ -292,8 +300,11 @@ pub enum Event {
     SysFunc { kind: i32, arg: i32 },
     /// `0x45 <u16 起> <u16 止> <值>`：变量数组区间填充（FUN_00424A80）。
     VarsFill { from: u16, to: u16, value: i32 },
-    /// `0x48`：存档/读档菜单（只出现在 START.ISF，FUN_00438A90）。
-    SaveMenu,
+    /// `0x48 <u16 位数组容量> <u16 变量数组容量>`：确定存档块 27/28 的尺寸。
+    ///
+    /// 原版 `FUN_00438A90`：容量优先取自 `KIZUNAR.SAV` 里已有的块 27/28 头 4 字节；
+    /// 文件里没有这两块（新装游戏）时，才按脚本声明的尺寸重建整个存档文件。
+    SaveMenu { bits: u16, vars: u16 },
     /// `0x4B <u16 参数> <u8 条件号>`：第二组系统条件（FUN_004392A0）。
     SysCond { arg: u16, kind: u8 },
     /// `0x80 <u8 面> <名字>`：UI 文本资源（FUN_00422A00）。
@@ -607,6 +618,12 @@ pub struct Vm {
     pub sys27: Vec<u8>,
     /// 存档块 28（全局变量数组的落盘副本）。
     pub sys28: Vec<u8>,
+    /// 引擎 `+0x7D8`：存档位数组容量，VM 启动时从块 27 头 4 字节读出。
+    pub sav_bits: i32,
+    /// 引擎 `+0x7DC`：存档变量数组容量，VM 启动时从块 28 头 4 字节读出。
+    pub sav_vars: i32,
+    /// 是否已经尝试过从存档里取容量（等价于原版构造函数里的那两次读取）。
+    sav_ready: bool,
     /// `0xF1` 设的等待时长（引擎 vm+0x7B4 存的是 timeGetTime()+n）。
     pub deadline: i32,
     /// 收到这么多句台词就停（渲染用；None = 不停）。
@@ -668,6 +685,9 @@ impl Vm {
             text_bg: Vec::new(),
             sys27: Vec::new(),
             sys28: Vec::new(),
+            sav_bits: 0,
+            sav_vars: 0,
+            sav_ready: false,
             deadline: 0,
             stop_texts: None,
             text_count: 0,
@@ -693,87 +713,158 @@ impl Vm {
         s
     }
 
-    /// 把存档里的块 27/28 装进来（对应引擎打开 KIZUNAR.SAV 后读到的那两块）。
+    /// 把存档里的块 27/28 装进来（对应引擎构造函数里那两次「读块 27/28 头 4 字节」）。
+    ///
+    /// 原版 `FUN_00434350` / `FUN_00434470` 在 VM 构造时就把容量读进 `+0x7D8` / `+0x7DC`，
+    /// 所以 `0x48` 里那段「重建存档」只有在新装游戏（文件里没有块 27/28）时才会走到。
     pub fn load_system(&mut self, sf: &crate::sav::SaveFile) {
         self.sys27 = sf.system_block(27).to_vec();
         self.sys28 = sf.system_block(28).to_vec();
+        self.sav_bits = crate::sav::global_capacity(&self.sys27) as i32;
+        self.sav_vars = crate::sav::global_capacity(&self.sys28) as i32;
+        self.sav_ready = true;
     }
 
-    /// `0x4A`：从块 27/28 读回全局数组。位数组按 LSB-first 原样存放，
-    /// 变量数组是裸 u32，都从块首算起。
+    /// 懒初始化：从宿主那边读一次 `KIZUNAR.SAV`，把块 27/28 的容量装进 `+0x7D8/+0x7DC`。
+    /// 对应原版 VM 构造函数里的 `FUN_00434350` / `FUN_00434470`。
+    fn sav_ensure(&mut self) {
+        if self.sav_ready {
+            return;
+        }
+        self.sav_ready = true;
+        let Some(data) = self.host.save_read() else {
+            return;
+        };
+        let t = crate::sav::table(&data);
+        let n = data.len() as u32;
+        let ok = |o: u32| o != 0 && o.saturating_add(4) <= n;
+        if !(ok(t[27]) && ok(t[28])) {
+            return;
+        }
+        self.sys27 = crate::sav::block(&data, 27);
+        self.sys28 = crate::sav::block(&data, 28);
+        self.sav_bits = crate::sav::global_capacity(&self.sys27) as i32;
+        self.sav_vars = crate::sav::global_capacity(&self.sys28) as i32;
+    }
+
+    /// `0x48 <u16 位数组容量> <u16 变量数组容量>`（`FUN_00438A90`）。
+    ///
+    /// 两步：① 容量已经有（从存档里读到了）就什么都不做；
+    /// ② 否则按脚本声明的尺寸重建 `KIZUNAR.SAV`：块 0..26 和 29 原样搬运，
+    /// 块 27/28 换成 `4 字节容量 + 全 0`。
+    fn save_init(&mut self, bits: u16, vars: u16) {
+        self.sav_ensure();
+        if self.sav_bits >= 1 || self.sav_vars >= 1 {
+            return;
+        }
+        let old = self.host.save_read();
+        let mut blocks: Vec<Vec<u8>> = match &old {
+            Some(d) => (0..crate::sav::TABLE_N).map(|i| crate::sav::block(d, i)).collect(),
+            None => vec![Vec::new(); crate::sav::TABLE_N],
+        };
+        blocks[27] = crate::sav::new_global_block(bits as usize, false);
+        blocks[28] = crate::sav::new_global_block(vars as usize, true);
+        let out = crate::sav::pack_blocks(&blocks);
+        self.host.save_write(&out);
+        self.sys27 = blocks[27].clone();
+        self.sys28 = blocks[28].clone();
+        self.sav_bits = bits as i32;
+        self.sav_vars = vars as i32;
+    }
+
+    /// `0x4A`：从块 27/28 读回全局数组。
+    ///
+    /// 两层夹紧和原版一致：先按 `+0x7D8/+0x7DC`（`0x49` 在调用前就夹过），
+    /// 再按块头 4 字节的容量；数据从**头部之后**开始（`FUN_00423F10` 一进门先读 4 字节）。
     fn global_load(&mut self, start: i32, count: i32, which: u8) {
-        if start < 0 || count <= 0 {
+        self.sav_ensure();
+        let cap = if which == 0 { self.sav_bits } else { self.sav_vars };
+        if start < 0 || count <= 0 || start >= cap {
             return;
         }
         let start = start as usize;
-        let count = count as usize;
+        let count = (count as usize).min(cap as usize - start);
         if which == 0 {
-            if start >= self.bits_n {
-                return;
+            let blk = std::mem::take(&mut self.sys27);
+            let n = crate::sav::global_capacity(&blk).min(self.bits_n);
+            if start < n {
+                let end = (start + count).min(n);
+                for i in start..end {
+                    let at = 4 + (i >> 3);
+                    let bit = match blk.get(at) {
+                        Some(&b) => (b >> (i & 7)) & 1,
+                        None => 0,
+                    };
+                    self.bits[i] = bit;
+                }
             }
-            let base = start / 8;
-            let end = (start + count).min(self.bits_n);
-            for i in start..end {
-                let at = base + (i / 8 - base);
-                let bit = match self.sys27.get(at) {
-                    Some(&b) => (b >> (i & 7)) & 1,
-                    None => 0,
-                };
-                self.bits[i] = bit;
-            }
+            self.sys27 = blk;
         } else if which == 1 {
-            if start >= self.vars_n {
-                return;
+            let blk = std::mem::take(&mut self.sys28);
+            let n = crate::sav::global_capacity(&blk).min(self.vars_n).min(self.vars.len());
+            if start < n {
+                let end = (start + count).min(n);
+                for i in start..end {
+                    let at = 4 + i * 4;
+                    let v = match blk.get(at..at + 4) {
+                        Some(b) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                        None => 0,
+                    };
+                    self.vars[i] = v;
+                }
             }
-            let end = (start + count).min(self.vars_n).min(self.vars.len());
-            for i in start..end {
-                let at = i * 4;
-                let v = match self.sys28.get(at..at + 4) {
-                    Some(b) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-                    None => 0,
-                };
-                self.vars[i] = v;
-            }
+            self.sys28 = blk;
         }
     }
 
     /// `0x49`：把全局数组写回块 27/28（存档时随文件一起落盘）。
+    ///
+    /// 位数组是**按字节整块打包**（`FUN_00423F10`）：从 `start/8` 那一字节开始，
+    /// 每字节 8 位都从内存数组重新取，所以 `start` 不对齐时也会把前面的位一起覆盖。
     fn global_store(&mut self, start: i32, count: i32, which: u8) {
-        if start < 0 || count <= 0 {
+        self.sav_ensure();
+        let cap = if which == 0 { self.sav_bits } else { self.sav_vars };
+        if start < 0 || count <= 0 || start >= cap {
             return;
         }
         let start = start as usize;
-        let count = count as usize;
+        let count = (count as usize).min(cap as usize - start);
         if which == 0 {
-            if start >= self.bits_n {
-                return;
-            }
-            let base = start / 8;
-            let end = (start + count).min(self.bits_n);
-            let need = base + (end.div_ceil(8) - base);
-            if self.sys27.len() < need {
-                self.sys27.resize(need, 0);
-            }
-            for i in start..end {
-                let at = base + (i / 8 - base);
-                if self.bits[i] != 0 {
-                    self.sys27[at] |= 1 << (i & 7);
-                } else {
-                    self.sys27[at] &= !(1 << (i & 7));
+            let blk = std::mem::take(&mut self.sys27);
+            let n = crate::sav::global_capacity(&blk).min(self.bits_n);
+            if start < n {
+                let end = (start + count).min(n);
+                let b1 = end.div_ceil(8);
+                for b in start / 8..b1 {
+                    let mut v = 0u8;
+                    for k in 0..8 {
+                        let i = b * 8 + k;
+                        if i < self.bits_n && self.bits[i] != 0 {
+                            v |= 1 << k;
+                        }
+                    }
+                    let at = 4 + b;
+                    if self.sys27.len() <= at {
+                        self.sys27.resize(at + 1, 0);
+                    }
+                    self.sys27[at] = v;
                 }
             }
+            self.sys27 = blk;
         } else if which == 1 {
-            if start >= self.vars_n {
-                return;
+            let blk = std::mem::take(&mut self.sys28);
+            let n = crate::sav::global_capacity(&blk).min(self.vars_n).min(self.vars.len());
+            if start < n {
+                let end = (start + count).min(n);
+                for i in start..end {
+                    let at = 4 + i * 4;
+                    if self.sys28.len() < at + 4 {
+                        self.sys28.resize(at + 4, 0);
+                    }
+                    self.sys28[at..at + 4].copy_from_slice(&self.vars[i].to_le_bytes());
+                }
             }
-            let end = (start + count).min(self.vars_n).min(self.vars.len());
-            let need = end * 4;
-            if self.sys28.len() < need {
-                self.sys28.resize(need, 0);
-            }
-            for i in start..end {
-                self.sys28[i * 4..i * 4 + 4].copy_from_slice(&self.vars[i].to_le_bytes());
-            }
+            self.sys28 = blk;
         }
     }
 
@@ -1341,9 +1432,12 @@ impl Vm {
                 Ok(false)
             }
             0x48 => {
-                // FUN_00438A90：存档/读档菜单，只出现在 START.ISF
+                // FUN_00438A90：<u16 位数组容量> <u16 变量数组容量>，只出现在 START.ISF。
+                let bits = self.take_u16();
+                let vars = self.take_u16();
                 self.code = end;
-                self.events.push(Event::SaveMenu);
+                self.save_init(bits, vars);
+                self.events.push(Event::SaveMenu { bits, vars });
                 Ok(false)
             }
             0x4B => {

@@ -532,7 +532,7 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
     let mods = load_modules(&exe_path, &arc_path)?;
     let vm = isf::Vm::new(&script, steps).with_modules(mods, &stem_of(script_name));
 
-    let mut eng = kzn::engine::Engine::new(vm);
+    let mut eng = kzn::engine::Engine::new(vm).with_dir(dir);
     eng.pump(&assets, &assets, budget);
 
     let mut printed = 0usize;
@@ -696,7 +696,9 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
                 isf::Event::VarsFill { from, to, value } => {
                     writeln!(f, "[VARS_FILL] {}..{} = {}", from, to, value)?
                 }
-                isf::Event::SaveMenu => writeln!(f, "[SAVE_MENU]")?,
+                isf::Event::SaveMenu { bits, vars } => {
+                    writeln!(f, "[SAVE_MENU] bits={} vars={}", bits, vars)?
+                }
                 isf::Event::SysCond { arg, kind } => {
                     writeln!(f, "[SYSCOND] kind={} arg={}", kind, arg)?
                 }
