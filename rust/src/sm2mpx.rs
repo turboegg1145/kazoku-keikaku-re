@@ -11,6 +11,13 @@
 //!           0x0C u32 数据偏移
 //!           0x10 u32 数据长度
 //! ```
+//!
+//! 打开时只读目录（几十 KB），成员按需 seek 读取。
+//! 之前是整份读进内存，VOICE1+VOICE2 一共 400MB，在机械盘上要等 40 秒。
+
+use std::cell::RefCell;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 
 use crate::{u32le, Error, Result};
 
@@ -25,16 +32,43 @@ pub struct Entry {
     pub size: usize,
 }
 
+enum Backing {
+    /// 整份在内存里（测试、或本来就小的归档）。
+    Mem(Vec<u8>),
+    /// 按需读取。RefCell 只为了在 &self 上做 seek+read。
+    File(RefCell<File>),
+}
+
 pub struct Archive {
-    data: Vec<u8>,
+    backing: Backing,
     pub entries: Vec<Entry>,
+    /// 归档文件长度（懒加载时用来做越界检查）。
+    len: usize,
 }
 
 impl Archive {
+    /// 打开归档：只读目录，不读数据区。
     pub fn open(path: &str) -> Result<Archive> {
-        Archive::parse(std::fs::read(path)?)
+        let mut f = File::open(path).map_err(|e| Error(format!("{}: {}", path, e)))?;
+        let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+        let mut head = [0u8; HEADER_SIZE];
+        f.read_exact(&mut head)
+            .map_err(|e| Error(format!("{}: 读文件头失败: {}", path, e)))?;
+        if &head[..8] != MAGIC {
+            return Err(Error(format!("{}: 不是 SM2MPX10 归档", path)));
+        }
+        let count = u32le(&head, 8) as usize;
+        if HEADER_SIZE + count * ENTRY_SIZE > len {
+            return Err(Error(format!("{}: 目录项数 {} 超出文件长度", path, count)));
+        }
+        let mut dir = vec![0u8; count * ENTRY_SIZE];
+        f.read_exact(&mut dir)
+            .map_err(|e| Error(format!("{}: 读目录失败: {}", path, e)))?;
+        let entries = parse_entries(&dir, count, len)?;
+        Ok(Archive { backing: Backing::File(RefCell::new(f)), entries, len })
     }
 
+    /// 从内存解析（测试用）。
     pub fn parse(data: Vec<u8>) -> Result<Archive> {
         if data.len() < HEADER_SIZE || &data[..8] != MAGIC {
             return Err(Error("不是 SM2MPX10 归档".into()));
@@ -43,25 +77,23 @@ impl Archive {
         if HEADER_SIZE + count * ENTRY_SIZE > data.len() {
             return Err(Error(format!("目录项数 {} 超出文件长度", count)));
         }
-        let mut entries = Vec::with_capacity(count);
-        for i in 0..count {
-            let base = HEADER_SIZE + i * ENTRY_SIZE;
-            let raw = &data[base..base + 12];
-            let end = raw.iter().position(|&b| b == 0).unwrap_or(12);
-            let name = decode_cp932_name(&raw[..end]);
-            let offset = u32le(&data, base + 12) as usize;
-            let size = u32le(&data, base + 16) as usize;
-            if offset + size > data.len() {
-                return Err(Error(format!("目录项越界: {} @{:#x}+{:#x}", name, offset, size)));
-            }
-            entries.push(Entry { name, offset, size });
-        }
-        Ok(Archive { data, entries })
+        let len = data.len();
+        let entries = parse_entries(&data[HEADER_SIZE..HEADER_SIZE + count * ENTRY_SIZE], count, len)?;
+        Ok(Archive { backing: Backing::Mem(data), entries, len })
     }
 
-    pub fn get(&self, name: &str) -> Option<&[u8]> {
-        let e = self.find(name)?;
-        Some(&self.data[e.offset..e.offset + e.size])
+    /// 取成员内容。
+    pub fn bytes(&self, e: &Entry) -> Result<Vec<u8>> {
+        match &self.backing {
+            Backing::Mem(d) => Ok(d[e.offset..e.offset + e.size].to_vec()),
+            Backing::File(f) => {
+                let mut f = f.borrow_mut();
+                f.seek(SeekFrom::Start(e.offset as u64))?;
+                let mut buf = vec![0u8; e.size];
+                f.read_exact(&mut buf)?;
+                Ok(buf)
+            }
+        }
     }
 
     pub fn find(&self, name: &str) -> Option<&Entry> {
@@ -76,9 +108,30 @@ impl Archive {
         })
     }
 
-    pub fn bytes(&self, e: &Entry) -> &[u8] {
-        &self.data[e.offset..e.offset + e.size]
+    pub fn len(&self) -> usize {
+        self.len
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+fn parse_entries(dir: &[u8], count: usize, file_len: usize) -> Result<Vec<Entry>> {
+    let mut entries = Vec::with_capacity(count);
+    for i in 0..count {
+        let base = i * ENTRY_SIZE;
+        let raw = &dir[base..base + 12];
+        let end = raw.iter().position(|&b| b == 0).unwrap_or(12);
+        let name = decode_cp932_name(&raw[..end]);
+        let offset = u32le(dir, base + 12) as usize;
+        let size = u32le(dir, base + 16) as usize;
+        if offset + size > file_len {
+            return Err(Error(format!("目录项越界: {} @{:#x}+{:#x}", name, offset, size)));
+        }
+        entries.push(Entry { name, offset, size });
+    }
+    Ok(entries)
 }
 
 /// 目录里的名字是 cp932；本作全是 ASCII，非 ASCII 字节退化成 U+FFFD。

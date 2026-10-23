@@ -401,6 +401,38 @@ pub struct ChoiceWindow {
     pub items: Vec<(i32, i32, i32, i32, String)>,
 }
 
+impl Player {
+    /// 消息窗口在屏幕上的左上角。引擎把 552×152 的窗口摆在底部居中、离底 8px。
+    pub fn msg_origin(&self) -> (i32, i32) {
+        ((640 - 552) / 2, 480 - 152 - 8)
+    }
+
+    /// 第 w 个窗口的第 i 个选项在**屏幕**上的矩形（不含滚动）。
+    pub fn choice_rect(&self, w: usize, i: usize) -> Option<(i32, i32, i32, i32)> {
+        let cw = self.choices.get(w)?;
+        let (x, y, rw, rh, _) = cw.text_at(i)?;
+        let (ox, oy) = self.msg_origin();
+        Some((ox + cw.x + x, oy + cw.y + y, rw, rh))
+    }
+
+    /// 屏幕坐标落在哪个选项上：返回 (窗口号, 选项号)。
+    pub fn hit_choice(&self, x: i32, y: i32) -> Option<(usize, usize)> {
+        for (w, cw) in self.choices.iter().enumerate() {
+            if cw.open == 0 {
+                continue;
+            }
+            for i in 0..cw.open as usize {
+                if let Some((rx, ry, rw_, rh_)) = self.choice_rect(w, i) {
+                    if x >= rx && y >= ry && x < rx + rw_ && y < ry + rh_ {
+                        return Some((w, i));
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
 impl ChoiceWindow {
     /// 选项在**窗口内**的矩形：客户区原点 + 0x15 给的相对坐标。
     /// 引擎 FUN_00418560 存的就是 base+param，FUN_00418990 直接拿它当窗口坐标用。

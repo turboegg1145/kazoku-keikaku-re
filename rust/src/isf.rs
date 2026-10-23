@@ -547,6 +547,16 @@ pub struct Vm {
     /// 主循环驱动时置 true：0x18 的鼠标模式会卡住 PC 等输入（引擎行为）。
     /// 批量 dump 时置 false，否则会原地死循环。
     pub block_on_input: bool,
+    /// 上一条 step() 是不是「没推进 PC、原地等输入」（引擎里没调 FUN_00434EB0）。
+    /// 主循环靠它判断该不该把控制权交回给玩家。
+    pub blocked: bool,
+    /// 阻塞时这条指令的结束偏移：解除阻塞就是跳到它（= 引擎补一次 FUN_00434EB0）。
+    pub blocked_end: usize,
+    /// 指令处理函数请求「卡住」的标记，step() 用它决定是否回退 PC。
+    block_requested: bool,
+    /// 上一条 0x85 是不是「轮询了但没输入」。脚本靠循环轮询等点击，
+    /// 主循环靠这个标记判断「它其实在等人」。
+    pub poll_wait: bool,
     ret: Vec<usize>,
     pub events: Vec<Event>,
     pub steps: u64,
@@ -619,6 +629,10 @@ impl Vm {
             // dump 模式下不模拟输入：等价于「永远选第 0 项」，这样能走完一条完整路线
             hover: 0,
             block_on_input: false,
+            blocked: false,
+            blocked_end: 0,
+            block_requested: false,
+            poll_wait: false,
             ret: Vec::new(),
             events: Vec::new(),
             steps: 0,
@@ -879,6 +893,8 @@ impl Vm {
     /// 游戏主循环用它做单步驱动：跑一条指令、把新事件交给渲染/音频层，
     /// 遇到需要等待的指令（台词、过渡、选项）就 break 出去等时间/输入。
     pub fn step(&mut self) -> Result<Option<Halt>> {
+        self.blocked = false;
+        self.poll_wait = false;
         if self.steps >= self.limit {
             return Ok(Some(Halt::StepLimit));
         }
@@ -899,7 +915,17 @@ impl Vm {
         }
         self.steps += 1;
         match self.exec(op, end) {
-            Ok(true) => Ok(None),
+            Ok(true) => {
+                if self.block_requested {
+                    // 这条指令要等输入：把 PC 退回去，下次 step() 重新执行它。
+                    // 引擎里对应的就是「没调 FUN_00434EB0」，指令号不变。
+                    self.block_requested = false;
+                    self.code = start;
+                    self.blocked = true;
+                    self.blocked_end = end;
+                }
+                Ok(None)
+            }
             Ok(false) => {
                 self.code = end;
                 Ok(None)
@@ -907,6 +933,14 @@ impl Vm {
             Err(Halt::End) => Ok(Some(Halt::End)),
             Err(Halt::ReturnUnderflow) => Ok(Some(Halt::ReturnUnderflow)),
             Err(other) => Ok(Some(other)),
+        }
+    }
+
+    /// 解除输入阻塞：跳过那条卡住的指令（引擎里是输入处理函数补调 FUN_00434EB0）。
+    pub fn unblock(&mut self) {
+        if self.blocked {
+            self.code = self.blocked_end;
+            self.blocked = false;
         }
     }
 
@@ -1000,6 +1034,12 @@ impl Vm {
                     if self.text_count >= n {
                         return Err(Halt::TextLimit);
                     }
+                }
+                // 引擎的 0x2B（0x437530）写完文本就直接返回，不调 FUN_00434EB0，
+                // 也就是「这句台词挂着，等玩家点」。这是全篇最主要的阻塞点。
+                if self.block_on_input {
+                    self.block_requested = true;
+                    return Ok(true);
                 }
                 Ok(false)
             }
@@ -1526,7 +1566,8 @@ impl Vm {
                         }
                         self.events.push(Event::ChoiceInput { window, value: slot, flags });
                         if self.block_on_input {
-                            return Ok(true); // 阻塞：下一次 step() 重新执行这条指令
+                            self.block_requested = true;
+                            return Ok(true); // 阻塞：step() 会把 PC 退回去
                         }
                     }
                     1 => {
@@ -1725,6 +1766,10 @@ impl Vm {
                     } else {
                         self.host.poll_input(mode, flags & 1)
                     };
+                    if ev == 0 {
+                        // 没有输入：脚本会自己循环回来，主循环把它当「等玩家」。
+                        self.poll_wait = true;
+                    }
                     self.set_var(va, spot);
                     self.set_var(vb, ev);
                 }

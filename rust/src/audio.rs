@@ -140,7 +140,8 @@ pub struct Mixer {
     /// 正在淡出的旧 BGM（切换时交叉淡化用）。
     pub bgm_old: Option<Voice>,
     pub voice: Option<Voice>,
-    pub se: Vec<Voice>,
+    /// SE 声道：引擎按「槽号」管理（0x74 载入、0x75 播放、0x76 停止）。
+    pub se: Vec<(i32, Voice)>,
     pub master: f32,
 }
 
@@ -189,8 +190,18 @@ impl Mixer {
         self.voice = None;
     }
 
-    pub fn play_se(&mut self, track: Arc<Track>, volume: f32) {
-        self.se.push(Voice::new(track, volume, false));
+    /// 在指定槽位播放 SE；同一槽位再播会打断旧的（引擎 0x75 的行为）。
+    pub fn play_se(&mut self, slot: i32, track: Arc<Track>, volume: f32) {
+        self.se.retain(|(s, _)| *s != slot);
+        self.se.push((slot, Voice::new(track, volume, false)));
+    }
+
+    pub fn stop_se(&mut self, slot: i32) {
+        self.se.retain(|(s, _)| *s != slot);
+    }
+
+    pub fn stop_all_se(&mut self) {
+        self.se.clear();
     }
 
     /// 生成 frames 帧的 PCM（交错 chans 声道）。
@@ -211,10 +222,10 @@ impl Mixer {
                 self.voice = None;
             }
         }
-        for v in self.se.iter_mut() {
+        for (_, v) in self.se.iter_mut() {
             v.mix_into(&mut out, out_rate, chans);
         }
-        self.se.retain(|v| !v.done);
+        self.se.retain(|(_, v)| !v.done);
         if self.master != 1.0 {
             for s in out.iter_mut() {
                 *s = (*s as f32 * self.master) as i16;

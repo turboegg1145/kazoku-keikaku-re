@@ -84,6 +84,7 @@ fn main() {
         "dump" => cmd_dump(&args[1..]),
         "sav" => cmd_sav(&args[1..]),
         "audio" => cmd_audio(&args[1..]),
+        "play" => cmd_play(&args[1..]),
         _ => usage(),
     };
     if let Err(e) = rc {
@@ -122,9 +123,9 @@ fn cmd_png(args: &[String]) -> kzn::Result<()> {
     }
     let archive = sm2mpx::Archive::open(&args[0])?;
     let data = if let Some(e) = archive.find(&args[1]) {
-        archive.bytes(e).to_vec()
+        archive.bytes(e)?
     } else if let Some(e) = archive.find_stem(&args[1]) {
-        archive.bytes(e).to_vec()
+        archive.bytes(e)?
     } else {
         return Err(kzn::Error(format!("归档里没有 {}", args[1])));
     };
@@ -152,7 +153,7 @@ fn cmd_raw(args: &[String]) -> kzn::Result<()> {
         .find(&args[1])
         .or_else(|| archive.find_stem(&args[1]))
         .ok_or_else(|| kzn::Error(format!("归档里没有 {}", args[1])))?;
-    let img = ggd::decode(archive.bytes(e))?;
+    let img = ggd::decode(&archive.bytes(e)?)?;
     let mut out = Vec::with_capacity(16 + img.pixels.len());
     out.extend_from_slice(&(img.width as u32).to_le_bytes());
     out.extend_from_slice(&(img.height as u32).to_le_bytes());
@@ -174,7 +175,7 @@ fn cmd_hashes(args: &[String]) -> kzn::Result<()> {
     let mut ok = 0usize;
     let mut bad = 0usize;
     for e in &archive.entries {
-        match ggd::decode(archive.bytes(e)) {
+        match ggd::decode(&archive.bytes(e)?) {
             Ok(img) => {
                 use sha2::{Digest, Sha256};
                 let digest = Sha256::digest(&img.pixels);
@@ -361,7 +362,7 @@ impl kzn::render::ImageSource for Assets {
     fn image(&self, name: &str) -> Option<ggd::Image> {
         for arc in [Some(&self.ggd), self.ggd2.as_ref()].into_iter().flatten() {
             if let Some(e) = arc.find(name).or_else(|| arc.find_stem(name)) {
-                return ggd::decode(arc.bytes(e)).ok();
+                return arc.bytes(e).ok().and_then(|b| ggd::decode(&b).ok());
             }
         }
         None
@@ -489,7 +490,7 @@ fn load_script(exe: &str, arc: &str, name: &str) -> kzn::Result<isf::Script> {
     let e = archive
         .find(name)
         .ok_or_else(|| kzn::Error(format!("ISF 归档里没有 {}", name)))?;
-    isf::Script::parse(archive.bytes(e), &secret)
+    isf::Script::parse(&archive.bytes(e)?, &secret)
 }
 
 /// 把所有 ISF 成员解密成 {模块名: Script}，供 0x02 CALLMOD 调用。
@@ -507,7 +508,7 @@ fn load_modules(
             continue;
         }
         let stem = up.rsplit_once('.').map(|(a, _)| a).unwrap_or(&up).to_string();
-        out.insert(stem, std::rc::Rc::new(isf::Script::parse(archive.bytes(e), &secret)?));
+        out.insert(stem, std::rc::Rc::new(isf::Script::parse(&archive.bytes(e)?, &secret)?));
     }
     Ok(out)
 }
@@ -572,8 +573,8 @@ fn cmd_audio(args: &[String]) -> kzn::Result<()> {
         .find(want)
         .or_else(|| archive.find_stem(want))
         .ok_or_else(|| format!("归档里没有 {}", want))?;
-    let bytes = archive.bytes(e);
-    let t = kzn::audio::decode_ogg(bytes)?;
+    let bytes = archive.bytes(e)?;
+    let t = kzn::audio::decode_ogg(&bytes)?;
     let peak = t.samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
     println!(
         "{}: {:.2} 秒  {} Hz  {} 声道  峰值 {}",
@@ -587,6 +588,127 @@ fn cmd_audio(args: &[String]) -> kzn::Result<()> {
         let out = args.get(i + 1).cloned().unwrap_or_else(|| "out.wav".to_string());
         kzn::audio::write_wav(&out, &t.samples, t.rate, t.channels)?;
         println!("  -> {}", out);
+    }
+    Ok(())
+}
+
+/// 音频资源：把各归档按名字查出来。
+struct Media {
+    wmsc: Option<sm2mpx::Archive>,
+    se: Option<sm2mpx::Archive>,
+    voice1: Option<sm2mpx::Archive>,
+    voice2: Option<sm2mpx::Archive>,
+}
+
+impl Media {
+    fn open(dir: &str, enable: bool) -> Media {
+        if !enable {
+            return Media { wmsc: None, se: None, voice1: None, voice2: None };
+        }
+        let o = |n: &str| sm2mpx::Archive::open(&format!("{}/{}", dir, n)).ok();
+        Media { wmsc: o("WMSC"), se: o("SE"), voice1: o("VOICE1"), voice2: o("VOICE2") }
+    }
+
+    fn arc(&self, name: &str) -> Option<&sm2mpx::Archive> {
+        match name {
+            "WMSC" => self.wmsc.as_ref(),
+            "SE" => self.se.as_ref(),
+            "VOICE1" => self.voice1.as_ref(),
+            "VOICE2" => self.voice2.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+impl kzn::engine::AudioSource for Media {
+    fn ogg(&self, archive: &str, name: &str) -> Option<Vec<u8>> {
+        let a = self.arc(archive)?;
+        let e = a.find(name).or_else(|| a.find_stem(name))?;
+        a.bytes(e).ok()
+    }
+}
+
+/// `kzn play <目录> <剧本> [--lines N] [--steps N] [--no-audio] [--budget N]`
+///
+/// 无人值守跑一遍：台词全部瞬间显示、选项永远选第 0 项。
+/// 这是主循环的端到端验证——能把一个剧本从头跑到尾，就说明等待/推进/事件分发都对上了。
+fn cmd_play(args: &[String]) -> kzn::Result<()> {
+    if args.len() < 2 {
+        usage();
+    }
+    let dir = &args[0];
+    let script_name = &args[1];
+    let steps = flag(args, "--steps", 5_000_000);
+    let want_lines = flag(args, "--lines", 40) as usize;
+    let budget = flag(args, "--budget", 20_000) as usize;
+    let audio = !args.iter().any(|a| a == "--no-audio");
+    let verbose = !args.iter().any(|a| a == "--quiet");
+
+    let assets = Assets {
+        ggd: sm2mpx::Archive::open(&format!("{}/GGD", dir))?,
+        ggd2: sm2mpx::Archive::open(&format!("{}/GGD2", dir)).ok(),
+    };
+    let media = Media::open(dir, audio);
+
+    let exe_path = format!("{}/KIZUNAR.EXE", dir);
+    let arc_path = format!("{}/ISF", dir);
+    let script = load_script(&exe_path, &arc_path, script_name)?;
+    let mods = load_modules(&exe_path, &arc_path)?;
+    let vm = isf::Vm::new(&script, steps).with_modules(mods, &stem_of(script_name));
+
+    let mut eng = kzn::engine::Engine::new(vm);
+    eng.pump(&assets, &media, budget);
+
+    let mut printed = 0usize;
+    let mut last_wait = eng.wait.clone();
+    let mut frames = 0u64;
+    loop {
+        if verbose {
+            while printed < eng.log.len() {
+                let l = &eng.log[printed];
+                let who = match l.speaker {
+                    Some(s) => format!("#{:02X}", s),
+                    None => "--".to_string(),
+                };
+                println!("{} [{}] {}", printed + 1, who, l.text);
+                printed += 1;
+            }
+            if eng.wait != last_wait {
+                if let kzn::engine::Wait::Choice(w) = eng.wait.clone() {
+                    if let Some(cw) = eng.player.choices.get(w) {
+                        let opts: Vec<String> = (0..cw.open as usize)
+                            .filter_map(|i| cw.text_at(i).map(|(_, _, _, _, t)| t.to_string()))
+                            .collect();
+                        println!("  选项窗 {}: {}", w, opts.join(" / "));
+                    }
+                }
+                last_wait = eng.wait.clone();
+            }
+        }
+        if eng.lines >= want_lines {
+            println!("-- 已跑 {} 句台词，主动停", eng.lines);
+            break;
+        }
+        if !eng.auto_advance(&assets, &media) {
+            break;
+        }
+        if args.iter().any(|a| a == "--trace") && frames % 20 == 0 {
+            println!("  .. 帧 {} pc={:#x} 台词 {} 等待 {:?}", frames, eng.vm.code, eng.lines, eng.wait);
+        }
+        eng.tick(1000.0 / 60.0);
+        frames += 1;
+        if frames > 5_000_000 {
+            println!("-- 帧数上限，强制停");
+            break;
+        }
+    }
+
+    println!(
+        "{}: 台词 {} 句，选项 {} 个，帧 {}，指令 {}，结束 {:?}",
+        script_name, eng.lines, eng.choices, frames, eng.vm.steps, eng.wait
+    );
+    if !eng.player.missing.is_empty() {
+        println!("归档里找不到的图: {:?}", eng.player.missing);
     }
     Ok(())
 }
@@ -614,13 +736,13 @@ fn cmd_dump(args: &[String]) -> kzn::Result<()> {
             continue;
         }
         let stem = up.rsplit_once('.').map(|(a, _)| a).unwrap_or(&up).to_string();
-        mods.insert(stem, std::rc::Rc::new(isf::Script::parse(archive.bytes(e), &secret)?));
+        mods.insert(stem, std::rc::Rc::new(isf::Script::parse(&archive.bytes(e)?, &secret)?));
     }
     let mut total_text = 0usize;
     let mut total_steps = 0u64;
     for name in &names {
         let e = archive.find(name).unwrap();
-        let script = isf::Script::parse(archive.bytes(e), &secret)?;
+        let script = isf::Script::parse(&archive.bytes(e)?, &secret)?;
         let mut vm = isf::Vm::new(&script, steps).with_modules(mods.clone(), &stem_of(name));
         if let Some(sf) = &save_beside(&args[0]) {
             vm.load_system(sf);

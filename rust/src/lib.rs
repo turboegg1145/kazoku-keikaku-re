@@ -7,6 +7,7 @@
 //! - `isf`：ISF 脚本解密 + 虚拟机
 
 pub mod audio;
+pub mod engine;
 pub mod ggd;
 pub mod render;
 pub mod isf;
