@@ -410,6 +410,19 @@ pub struct Effect {
     pub invert: bool,
 }
 
+/// `0x63` 画面抖动（`FUN_00413090` 起状态、`FUN_00413119` 每帧推进）。
+///
+/// 引擎不是真的抖像素，而是**改滚动原点**再贴一块更大的源区域：
+/// 每 `duration / (kind*2)` 毫秒切换一次符号，偏移量就是 `(a, b)`。
+pub struct Shake {
+    pub a: i32,
+    pub b: i32,
+    /// 来回次数（脚本里是 2 或 10）。
+    pub kind: i32,
+    pub dur: f64,
+    pub start: f64,
+}
+
 /// 解 8bpp BMP（特效蒙版）：返回 (宽, 高, 每像素 1 字节，从上到下)。
 pub fn decode_mask(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     if data.len() < 0x36 || &data[..2] != b"BM" {
@@ -522,6 +535,10 @@ pub struct Player {
     pub effect: Option<Effect>,
     /// 播过的特效名（按顺序）。
     pub effects: Vec<String>,
+    /// 正在播的 0x63 抖动。
+    pub shake: Option<Shake>,
+    /// 触发过多少次抖动。
+    pub shakes: u64,
 }
 
 impl Default for Player {
@@ -555,6 +572,8 @@ impl Player {
             clock: 0.0,
             effect: None,
             effects: Vec::new(),
+            shake: None,
+            shakes: 0,
         }
     }
 
@@ -605,9 +624,19 @@ impl Player {
         base
     }
 
-    /// 只取显示面（不含特效）。
+    /// 只取显示面（不含特效）。抖动会临时改滚动原点。
     pub fn display_frame(&self) -> Canvas {
-        let (ox, oy) = self.off[self.display];
+        let (mut ox, mut oy) = self.off[self.display];
+        if let Some(s) = self.shake.as_ref() {
+            let steps = (s.kind * 2).max(1) as f64;
+            let step_ms = (s.dur / steps).max(0.001);
+            let idx = ((self.clock - s.start) / step_ms).floor() as i32;
+            if idx >= 0 && idx < s.kind * 2 {
+                let sign = if idx % 2 == 0 { 1 } else { -1 };
+                ox += sign * s.a;
+                oy += sign * s.b;
+            }
+        }
         match self.surf[self.display].as_ref() {
             Some(c) => c.crop(ox, oy, 640, 480),
             None => Canvas::new(640, 480),
@@ -776,6 +805,22 @@ impl Player {
                     _ => self.blit(d, s, *x, *y, *w, *h, *dx, *dy, 255),
                 }
                 true
+            }
+            Event::Transition { kind, a, b, dur } => {
+                // 0x63 <种类> <a> <b> <时长>：种类 = 来回次数，a/b = 每次偏移像素
+                if *kind > 0 && *dur > 0 && (*a > 0 || *b > 0) {
+                    self.shakes += 1;
+                    self.shake = Some(Shake {
+                        a: *a as i32,
+                        b: *b as i32,
+                        kind: *kind as i32,
+                        dur: *dur as f64,
+                        start: self.clock,
+                    });
+                    true
+                } else {
+                    false
+                }
             }
             Event::Effect { args, name } => {
                 // 0x60 <种类> <面> <时长> <取反> <附加> <蒙版名>

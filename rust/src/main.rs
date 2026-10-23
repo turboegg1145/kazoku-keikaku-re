@@ -718,7 +718,6 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
 
     let mut printed = 0usize;
     let mut shown_choices = 0usize;
-    let mut last_wait = eng.wait.clone();
     let mut frames = 0u64;
     loop {
         if verbose {
@@ -736,7 +735,6 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
                 println!("  选项窗 {}: {}", w, opts.join(" / "));
                 shown_choices += 1;
             }
-            let _ = &last_wait;
         }
         if eng.lines >= want_lines {
             println!("-- 已跑 {} 句台词，主动停", eng.lines);
@@ -768,6 +766,9 @@ fn cmd_play(args: &[String]) -> kzn::Result<()> {
             .map(|(a, o)| format!("{:#x}:{:02x}", a, o))
             .collect();
         println!("  最后 64 条: {}", tail.join(" "));
+    }
+    if eng.player.shakes > 0 {
+        println!("画面抖动 {} 次", eng.player.shakes);
     }
     if !eng.player.effects.is_empty() {
         let mut uniq: Vec<&String> = Vec::new();
