@@ -131,9 +131,45 @@ final class GameUIView: UIView {
         return out
     }
 
+    /// 完整版 ipa 里自带 `gamedata/`：在 Documents 里给它建符号链接，引擎照常按目录读。
+    ///
+    /// `KIZUNAR.SAV` 例外，真拷一份——存档要可写，包里的文件是只读的。
+    /// 这样装完直接能玩，不用手动拷 1 GB，也不占双份空间。
+    private func prepareData(_ docs: String) -> String {
+        guard let bundled = Bundle.main.url(forResource: "gamedata", withExtension: nil) else {
+            return docs
+        }
+        let fm = FileManager.default
+        let names = (try? fm.contentsOfDirectory(atPath: bundled.path)) ?? []
+        for n in names {
+            let src = bundled.appendingPathComponent(n)
+            let dst = URL(fileURLWithPath: docs).appendingPathComponent(n)
+            if n.uppercased() == "KIZUNAR.SAV" {
+                if !fm.fileExists(atPath: dst.path) {
+                    try? fm.copyItem(at: src, to: dst)
+                }
+                continue
+            }
+            // 链接已经指对了就跳过；坏了才重建。玩家自己放的实体文件不碰。
+            if let cur = try? fm.destinationOfSymbolicLink(atPath: dst.path) {
+                if cur == src.path { continue }
+                try? fm.removeItem(at: dst)
+            } else if fm.fileExists(atPath: dst.path) {
+                continue
+            }
+            do {
+                try fm.createSymbolicLink(atPath: dst.path, withDestinationPath: src.path)
+            } catch {
+                // 建不了链接就老实拷一份（少数情况下沙盒会拒绝跨容器链接）。
+                try? fm.copyItem(at: src, to: dst)
+            }
+        }
+        return docs
+    }
+
     private func setupEngine() {
-        // TrollStore 安装后，游戏数据放 Documents（用文件 App / AFC 拷进去）。
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        // 数据来源两种：包里的 gamedata（完整版 ipa），或 Documents（手动拷的）。
+        let docs = prepareData(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path)
         let fonts = fontCandidates()
         guard !fonts.isEmpty else {
             print("[kzn] 找不到字体资源")
