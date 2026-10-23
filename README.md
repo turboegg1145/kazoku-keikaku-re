@@ -32,7 +32,7 @@
 | `0xE5` 模态对话框 | ✅ 阻塞语义 + 关窗后重置 VM 载入 `LOAD.ISF`（28 章节目录表）|
 | 鉴赏室 | ✅ `BGMLOAD`（BGM 列表）/ `CGMODE`（CG 网格）/ `SEXMODE`（场景回放）都能跑 |
 | 字体 | ✅ Noto Sans CJK JP（原版 MS Gothic 的度量仍不同，见下）|
-| iOS | ✅ **GitHub Actions 已真编出未签名 `Kzn.ipa`**（arm64 / MinimumOSVersion 14.0 / 13.7 MB），TrollStore 直装 |
+| iOS | ✅ **GitHub Actions 已真编出未签名 `Kzn.ipa`**（arm64 / MinimumOSVersion 14.0 / 14.3 MB / 引擎静态链进去 1.47 MB），TrollStore 直装 |
 
 已知与原版不同：字体（MS Gothic → Noto Sans CJK JP）、
 设置是 iOS 原生表单而不是 Win32 属性页。

@@ -36,7 +36,8 @@ Windows 上没法编 Xcode，所以走 GitHub Actions（`.github/workflows/ios.y
 | 架构 | arm64（Mach-O 64-bit） |
 | MinimumOSVersion | **14.0** |
 | 链接 SDK | 17.5（Xcode 15.4） |
-| ipa 大小 | 13.7 MB（其中字体 16.4 MB 未压缩） |
+| 可执行文件 | 1.47 MB（Rust 引擎 + pl_mpeg 全静态链进来） |
+| ipa 大小 | 14.3 MB（其中字体 16.4 MB 未压缩） |
 | 包名 | `com.kazoku.kzn` |
 
 CI 里有两个坑已经钉死，别随手改：
@@ -45,6 +46,13 @@ CI 里有两个坑已经钉死，别随手改：
   runner 上的 Xcode 15.4 打不开，报 *"future Xcode project file format (77)"*。
 - **不要用 iOS 15+ 的 SwiftUI API**（`.borderedProminent`、`.tint`、`.task`、
   `AsyncImage`、`NavigationStack`）。编译器会直接报 *only available in iOS 15.0 or newer*。
+- **Rust 库必须静态链**（`-Wl,-force_load,.../libkzn.a`）。Cargo 同时产
+  `libkzn.a` 和 `libkzn.dylib` 时，`-lkzn` 会优先挑 **dylib**——ipa 里没有这个
+  dylib，链接却照样成功，装到手机上启动就闪退。所以：
+  1. `Cargo.toml` 的 `crate-type` 不要有 `cdylib`；
+  2. `OTHER_LDFLAGS` 显式指到 `.a` 并 `-force_load`（`#[no_mangle]` 的符号没有
+     别的引用，不加会被 `-dead_strip` 丢掉）；
+  3. CI 打包前会 `strings | grep libkzn.dylib`，一旦出现直接让构建失败。
 
 ## 装到手机
 
